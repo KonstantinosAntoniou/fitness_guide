@@ -18,6 +18,10 @@ class Food:
         self.db: Session = SessionLocal()
 
     def log_food(self) -> str:
+        # Validation for required fields
+        if not self.name.strip() or not self.label.strip() or not self.measurement.strip():
+            return "Name, Label and Measurement cannot be empty."
+
         exists = self.db.query(FoodModel).filter(
             FoodModel.name.ilike(self.name),
             FoodModel.label.ilike(self.label)
@@ -42,3 +46,16 @@ class Food:
 
     def get_all_foods(self):
         return self.db.query(FoodModel).all()
+
+    @staticmethod
+    def delete_food(name: str, label: str) -> str:
+        db = SessionLocal()
+        food = db.query(FoodModel).filter(
+            FoodModel.name.ilike(name),
+            FoodModel.label.ilike(label)
+        ).first()
+        if not food:
+            return f"Food '{name}' ({label}) not found."
+        db.delete(food)
+        db.commit()
+        return f"Food '{name}' ({label}) deleted successfully."
