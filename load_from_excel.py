@@ -29,9 +29,11 @@ def load_foods(excel_path: str = 'foods_log.xlsx'):
         session.commit()
         print("Foods loaded from Excel file.")
 
-def load_meals(excel_path: str = 'meals_log.xlsx'):
+'''
+def load_meals(excel_path='meals_log.xlsx'):
     df = pd.read_excel(excel_path)
     grouped = df.groupby('Meal_Name')
+
     with get_db() as session:
         for meal_name, group in grouped:
             meal = MealModel(name=meal_name)
@@ -39,29 +41,33 @@ def load_meals(excel_path: str = 'meals_log.xlsx'):
             session.flush()
 
             foods = group[~group['Food_Name'].str.contains('Total')]
+            for _, row in foods.iterrows():
+                try:
+                    mult_str, food_name = row['Food_Name'].split('x ', 1)
+                    multiplier = float(mult_str)
+                    label = row['Label']
+                    food = session.query(FoodModel).filter(
+                        FoodModel.name.ilike(food_name),
+                        FoodModel.label.ilike(label)
+                    ).first()
 
-            for index, row in foods.iterrows():
-                mult, food_name = row['Food_Name'].split('x', 1)
-                multiplier = float(mult)
-                label = row['Label']
-                food = session.query(FoodModel).filter(
-                    FoodModel.name.ilike(food_name),
-                    FoodModel.label.ilike(label)
-                ).first()
-                if food:
-                    meal_food = MealFoodMeal(
-                        meal_id=meal.id,
-                        food_id=food.id,
-                        multiplier=multiplier
-                    )
-                    session.add(meal_food)
+                    if food:
+                        assoc = MealFoodModel(
+                            meal_id=meal.id,
+                            food_id=food.id,
+                            multiplier=multiplier
+                        )
+                        session.add(assoc)
+                except Exception as e:
+                    print(f"⚠️ Skipping row: {row['Food_Name']}. Error: {e}")
+
         session.commit()
-        print("Meals loaded from Excel file.")
+'''
 
 def main():
     init_db()
     load_foods()
-    load_meals()
+    #load_meals()
     print("Data migraded from Excel to database.")
 
 if __name__ == "__main__":

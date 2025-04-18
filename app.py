@@ -257,7 +257,7 @@ def main():
         for food in selected:
             info = df_foods[df_foods['Name'] == food].iloc[0]
             mult = st.number_input(
-                f"{food} multiplier",
+                f"{info['Label']} {food} multiplier ({info['Measurement']})",
                 min_value=0.1, step=0.1,
                 key=f"mult_{food}"
             )
