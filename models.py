@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, Float
+from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, Float, Date
 from sqlalchemy.orm import relationship
 from db import Base
 
@@ -36,3 +36,16 @@ class MealFood(Base):
 
     meal = relationship('Meal', back_populates='meal_food_items')
     food = relationship('Food', back_populates='meal_food_items')
+
+class DailyPlan(Base):
+    __tablename__ = 'daily_plans'
+
+    id            = Column(Integer, primary_key=True, index=True)
+    date          = Column(Date,   nullable=False)
+    meals         = Column(String, nullable=False)   # e.g. "Chicken x2; Salad x1"
+    calories      = Column(Float,  nullable=False)
+    protein       = Column(Float,  nullable=False)
+    carbs         = Column(Float,  nullable=False)
+    fat_regular   = Column(Float,  nullable=False)
+    fat_saturated = Column(Float,  nullable=False)
+    sodium        = Column(Float,  nullable=False)

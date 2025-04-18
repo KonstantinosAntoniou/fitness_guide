@@ -1,15 +1,15 @@
 import streamlit as st
 import pandas as pd
 import os
-import openai
 from sqlalchemy.orm import joinedload
 from sqlalchemy import func
 from db import init_db, SessionLocal
-from models import Food as FoodModel, Meal as MealModel, MealFood as MealFoodModel
+from models import Food as FoodModel, Meal as MealModel, MealFood as MealFoodModel, DailyPlan
 from foods import Food as FoodService
 from meals import Meal as MealService
 from openai import OpenAI
 from openai import OpenAIError
+from datetime import date
 
 
 # Load OpenAI key from env
@@ -300,6 +300,9 @@ def main():
                         totals[k] += info[k] * mult
                     plan_items.append(f"{sel} x{mult}")
             else:
+                if df_meals.empty:
+                    st.warning("No meals logged yet. Please create meals first.")
+                    break
                 sel = st.selectbox("Select meal", df_meals['Meal Name'].unique(), key=f"meal_{i}")
                 if sel:
                     macros = MealService(sel).get_meal_macros(sel)
@@ -315,33 +318,58 @@ def main():
                 st.write(f"**{k.replace('_',' ')}:** {v:.2f}")
 
         if st.button("Save This Day’s Plan"):
-            record = {
-                'Date': pd.Timestamp.today().strftime('%Y-%m-%d'),
-                'Plan': "; ".join(plan_items),
-                **totals
-            }
-            file = 'daily_meal_plans.xlsx'
-            if os.path.exists(file):
-                df_exist = pd.read_excel(file)
-                df_exist = df_exist.append(record, ignore_index=True)
-            else:
-                df_exist = pd.DataFrame([record])
-            df_exist.to_excel(file, index=False)
-            st.success("Day plan saved!")
+            if not plan_items:
+                st.warning("No meals or foods selected.")
+                return
+            totals = {k: float(v) for k,v in totals.items()}
+            plan_str = "; ".join(plan_items)
+            db = SessionLocal()
+            new_plan = DailyPlan(
+                date=date.today(),
+                meals=plan_str,
+                calories=totals['Calories'],
+                protein=totals['Protein'],
+                carbs=totals['Carbs'],
+                fat_regular=totals['Fat_Regular'],
+                fat_saturated=totals['Fat_Saturated'],
+                sodium=totals['Sodium']
+            )
+            db.add(new_plan)
+            db.commit()
+            db.close()
+            st.success("Saved today's meal plan!")
+            st.balloons()   
 
     # ─── Tab 7: Saved Day Plans ───────────────────────────────────────
     with tab_daily:
         st.header("📆 Saved Day Plans")
-        file = 'daily_meal_plans.xlsx'
-        if os.path.exists(file):
-            df_plans = pd.read_excel(file)
-            if df_plans.empty:
-                st.write("No saved plans.")
-            else:
-                st.dataframe(df_plans, use_container_width=True)
-        else:
-            st.write("No saved plans yet.")
+        db = SessionLocal()
+        plans = db.query(DailyPlan).order_by(DailyPlan.date.desc()).all()
+        db.close()
 
+        if not plans:
+            st.write("No saved plans found.")
+        else:
+            df_plans = pd.DataFrame([{
+                'Date': p.date,
+                'Meals': p.meals,
+                'Calories': p.calories,
+                'Protein': p.protein,
+                'Carbs': p.carbs,
+                'Fat_Regular': p.fat_regular,
+                'Fat_Saturated': p.fat_saturated,
+                'Sodium': p.sodium
+            } for p in plans])
+            st.dataframe(df_plans, use_container_width=True)
+            st.markdown(
+                """
+                <style>
+                    div[data-testid="stHorizontalBlock"] > div:first-child {
+                        width: 100%;
+                    }
+                </style>
+                """, unsafe_allow_html=True
+            )
     # ─── Tab 8: ChatGPT Assistant ─────────────────────────────────────
     with tab_chat:
         st.header("💬 Nutrition & Training ChatGPT")
