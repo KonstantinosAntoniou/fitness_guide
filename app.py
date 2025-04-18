@@ -3,7 +3,7 @@ import pandas as pd
 import os
 from sqlalchemy.orm import joinedload
 from sqlalchemy import func
-from db import init_db, SessionLocal
+from db import init_db, SessionLocal, get_db
 from models import Food as FoodModel, Meal as MealModel, MealFood as MealFoodModel, DailyPlan
 from foods import Food as FoodService
 from meals import Meal as MealService
@@ -42,48 +42,50 @@ def main():
 
     # ─── Utils ───────────────────────────────────────────────────────
     def load_logged_foods() -> pd.DataFrame:
-        db = SessionLocal()
-        foods = db.query(FoodModel).all()
-        db.close()
-        return pd.DataFrame([{
-            'Name': f.name,
-            'Label': f.label,
-            'Measurement': f.measurement,
-            'Calories': f.calories,
-            'Protein': f.protein,
-            'Carbs': f.carbs,
-            'Fat_Regular': f.fat_regular,
-            'Fat_Saturated': f.fat_saturated,
-            'Sodium': f.sodium
-        } for f in foods])
+        from db import get_db
+        with get_db() as db:
+            foods = db.query(FoodModel).all()
+            return pd.DataFrame([{
+                'Name': f.name,
+                'Label': f.label,
+                'Measurement': f.measurement,
+                'Calories': f.calories,
+                'Protein': f.protein,
+                'Carbs': f.carbs,
+                'Fat_Regular': f.fat_regular,
+                'Fat_Saturated': f.fat_saturated,
+                'Sodium': f.sodium
+            } for f in foods])
+
 
     def load_logged_meals() -> pd.DataFrame:
-        db = SessionLocal()
-        meals = (
-            db.query(MealModel)
-              .options(
-                  joinedload(MealModel.meal_food_items)
-                    .joinedload(MealFoodModel.food)
-              )
-              .all()
-        )
-        rows = []
-        for m in meals:
-            svc        = MealService(m.name)
-            macros     = svc.get_meal_macros(m.name)
-            foods_list = [f"{mf.multiplier}x {mf.food.name}" for mf in m.meal_food_items]
-            rows.append({
-                'Meal Name': m.name,
-                'Food Names': "\n".join(foods_list),
-                'Calories':     macros.get('calories', 0),
-                'Protein':      macros.get('protein',  0),
-                'Carbs':        macros.get('carbs',    0),
-                'Fat_Regular':   macros.get('fat_regular',   0),
-                'Fat_Saturated': macros.get('fat_saturated', 0),
-                'Sodium':       macros.get('sodium',   0),
-            })
-        db.close()
-        return pd.DataFrame(rows)
+        from db import get_db
+        with get_db() as db:
+            meals = (
+                db.query(MealModel)
+                .options(
+                    joinedload(MealModel.meal_food_items)
+                        .joinedload(MealFoodModel.food)
+                )
+                .all()
+            )
+            rows = []
+            for m in meals:
+                svc = MealService(m.name)
+                macros = svc.get_meal_macros(m.name)
+                foods_list = [f"{mf.multiplier}x {mf.food.name}" for mf in m.meal_food_items]
+                rows.append({
+                    'Meal Name': m.name,
+                    'Food Names': "\n".join(foods_list),
+                    'Calories': macros.get('calories', 0),
+                    'Protein':  macros.get('protein',  0),
+                    'Carbs':    macros.get('carbs',    0),
+                    'Fat_Regular':   macros.get('fat_regular',   0),
+                    'Fat_Saturated': macros.get('fat_saturated', 0),
+                    'Sodium':   macros.get('sodium',   0),
+                })
+            return pd.DataFrame(rows)
+
 
     # ─── Tab 1: Calculator ────────────────────────────────────────────
     with tab_calc:
@@ -334,18 +336,18 @@ def main():
                 fat_saturated=totals['Fat_Saturated'],
                 sodium=totals['Sodium']
             )
-            db.add(new_plan)
-            db.commit()
-            db.close()
+            with get_db() as db:
+                db.add(new_plan)
+                db.commit()
             st.success("Saved today's meal plan!")
             st.balloons()   
 
     # ─── Tab 7: Saved Day Plans ───────────────────────────────────────
     with tab_daily:
         st.header("📆 Saved Day Plans")
-        db = SessionLocal()
-        plans = db.query(DailyPlan).order_by(DailyPlan.date.desc()).all()
-        db.close()
+        with get_db() as db:
+            plans = db.query(DailyPlan).order_by(DailyPlan.date.desc()).all()
+
 
         if not plans:
             st.write("No saved plans found.")
