@@ -3,7 +3,7 @@ from db import SessionLocal, init_db
 
 from models import Food as FoodModel, Meal as MealModel, MealFood as MealFoodMeal
 
-def load_foods(excel_path: str = 'food_log.xlsx'):
+def load_foods(excel_path: str = 'foods_log.xlsx'):
 
     session = SessionLocal()
     df = pd.read_excel(excel_path)
