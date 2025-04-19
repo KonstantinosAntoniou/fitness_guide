@@ -69,7 +69,7 @@ A full-featured nutrition and training assistant built with **Python**, **Stream
 
 ### 1. Clone the Repo
 ```bash
-git clone https://github.com/yourusername/fitness-planner.git
+git clone https://github.com/KonstantinosAntoniou/fitness-planner.git
 cd fitness-planner
 ```
 
