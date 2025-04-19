@@ -12,6 +12,65 @@ from openai import OpenAIError
 from datetime import date
 
 
+def update_daily_plans_for_food(food_name: str):
+    """
+    Recalculate all DailyPlan totals for plans whose 'meals' string mentions this food.
+    """
+    from db import get_db
+    with get_db() as db:
+        plans = db.query(DailyPlan) \
+                  .filter(DailyPlan.meals.ilike(f"%{food_name}%")) \
+                  .all()
+
+        for plan in plans:
+            items = [item.strip() for item in plan.meals.split(";")]
+            totals = {
+                'calories': 0.0,
+                'protein': 0.0,
+                'carbs': 0.0,
+                'fat_regular': 0.0,
+                'fat_saturated': 0.0,
+                'sodium': 0.0
+            }
+            for item in items:
+                if " x" in item:
+                    # it's a food entry like "Chicken x2.0"
+                    name_part, mult_part = item.rsplit(" x", 1)
+                    try:
+                        mult = float(mult_part)
+                        f = db.query(FoodModel).filter(FoodModel.name == name_part).first()
+                        if f:
+                            totals['calories']      += f.calories * mult
+                            totals['protein']       += f.protein  * mult
+                            totals['carbs']         += f.carbs    * mult
+                            totals['fat_regular']   += f.fat_regular   * mult
+                            totals['fat_saturated'] += f.fat_saturated * mult
+                            totals['sodium']        += f.sodium   * mult
+                    except:
+                        continue
+                else:
+                    # it's a meal name
+                    m = db.query(MealModel).filter(MealModel.name == item).first()
+                    if m:
+                        macros = MealService(m.name).get_meal_macros(m.name)
+                        totals['calories']      += macros.get('calories', 0)
+                        totals['protein']       += macros.get('protein',  0)
+                        totals['carbs']         += macros.get('carbs',    0)
+                        totals['fat_regular']   += macros.get('fat_regular',   0)
+                        totals['fat_saturated'] += macros.get('fat_saturated', 0)
+                        totals['sodium']        += macros.get('sodium',   0)
+
+            # write back to plan
+            plan.calories      = totals['calories']
+            plan.protein       = totals['protein']
+            plan.carbs         = totals['carbs']
+            plan.fat_regular   = totals['fat_regular']
+            plan.fat_saturated = totals['fat_saturated']
+            plan.sodium        = totals['sodium']
+
+        db.commit()
+
+
 # Load OpenAI key from env
 client = OpenAI()
 if not client.api_key:
@@ -171,24 +230,50 @@ def main():
             """)
 
     # ─── Tab 2: Log/Delete Food ─────────────────────────────────────────
+        # ─── Tab 2: Log / Edit / Delete Food ────────────────────────────────────
+        # ─── Tab 2: Log / Edit / Delete Food ──────────────────────────────────
     with tab_log:
-        st.header("➕ Log or ❌ Delete Food")
-        with st.form(key='food_form'):
-            name        = st.text_input("Name")
-            label       = st.text_input("Label")
-            measurement = st.text_input("Measurement")
-            calories    = st.number_input("Calories", min_value=0.0)
-            protein     = st.number_input("Protein", min_value=0.0)
-            carbs       = st.number_input("Carbs", min_value=0.0)
-            fat_sat     = st.number_input("Fat Saturated", min_value=0.0)
-            fat_reg     = st.number_input("Fat Regular", min_value=0.0)
-            sodium      = st.number_input("Sodium", min_value=0.0)
+        st.header("➕ Log • ✏️ Edit • ❌ Delete Food")
 
-            col1, col2 = st.columns(2)
-            submit     = col1.form_submit_button("Log Food")
-            delete     = col2.form_submit_button("Delete Food")
+        # 1️⃣ Fetch existing foods
+        with get_db() as db:
+            foods_list = db.query(FoodModel).all()
 
-        if submit:
+        options = ["-- New Food --"] + [f"{f.name} ({f.label})" for f in foods_list]
+        choice  = st.selectbox("Select food to edit/delete, or choose New:", options)
+        is_new  = (choice == "-- New Food --")
+
+        # 2️⃣ Prefill values
+        if is_new:
+            name0 = label0 = meas0 = ""
+            cal0 = prot0 = carb0 = fsat0 = freg0 = sod0 = 0.0
+        else:
+            idx  = options.index(choice) - 1
+            f0   = foods_list[idx]
+            name0, label0, meas0 = f0.name, f0.label, f0.measurement
+            cal0, prot0, carb0  = f0.calories, f0.protein, f0.carbs
+            fsat0, freg0, sod0  = f0.fat_saturated, f0.fat_regular, f0.sodium
+
+        # 3️⃣ The form itself
+        with st.form(key="food_form"):
+            name        = st.text_input("Name",        value=name0)
+            label       = st.text_input("Label",       value=label0)
+            measurement = st.text_input("Measurement", value=meas0)
+
+            calories  = st.number_input("Calories",      value=float(cal0), min_value=0.0)
+            protein   = st.number_input("Protein",       value=float(prot0), min_value=0.0)
+            carbs     = st.number_input("Carbs",         value=float(carb0), min_value=0.0)
+            fat_sat   = st.number_input("Fat Saturated", value=float(fsat0), min_value=0.0)
+            fat_reg   = st.number_input("Fat Regular",   value=float(freg0), min_value=0.0)
+            sodium    = st.number_input("Sodium",        value=float(sod0), min_value=0.0)
+
+            # Unconditionally include all three, but disable the irrelevant ones
+            submit_btn = st.form_submit_button("Log Food",    disabled=not is_new)
+            update_btn = st.form_submit_button("Update Food", disabled=is_new)
+            delete_btn = st.form_submit_button("Delete Food", disabled=is_new)
+
+        # 4️⃣ Handle the actions
+        if submit_btn:
             if not name.strip() or not label.strip() or not measurement.strip():
                 st.error("Name, Label, and Measurement cannot be empty.")
             else:
@@ -199,43 +284,65 @@ def main():
                 ).log_food()
                 st.success(msg) if "logged" in msg else st.error(msg)
 
-        if delete:
-            db   = SessionLocal()
-            food = db.query(FoodModel).filter(
-                        FoodModel.name.ilike(name),
-                        FoodModel.label.ilike(label)
-                   ).first()
-            if food:
-                # delete any meals containing this food
-                meals_with = (
-                    db.query(MealModel)
-                      .join(MealFoodModel)
-                      .filter(MealFoodModel.food_id == food.id)
-                      .all()
-                )
-                for m in meals_with:
-                    db.delete(m)
+        if update_btn:
+            with get_db() as db:
+                f_db = db.query(FoodModel).filter(
+                    FoodModel.name  == name0,
+                    FoodModel.label == label0
+                ).first()
+                if f_db:
+                    f_db.name           = name
+                    f_db.label          = label
+                    f_db.measurement    = measurement
+                    f_db.calories       = float(calories)
+                    f_db.protein        = float(protein)
+                    f_db.carbs          = float(carbs)
+                    f_db.fat_saturated  = float(fat_sat)
+                    f_db.fat_regular    = float(fat_reg)
+                    f_db.sodium         = float(sodium)
+                    db.commit()
+                    update_daily_plans_for_food(name0)
+                    st.success(f"Updated '{name0} ({label0})'.")
+                else:
+                    st.error("Original food not found.")
 
-                # delete the food (will cascade MealFood)
-                db.delete(food)
-                db.commit()
+        if delete_btn:
+            with get_db() as db:
+                f_db = db.query(FoodModel).filter(
+                    FoodModel.name  == name0,
+                    FoodModel.label == label0
+                ).first()
+                if f_db:
+                    # Delete meals that include this food
+                    meals_with = (
+                        db.query(MealModel)
+                          .join(MealFoodModel)
+                          .filter(MealFoodModel.food_id == f_db.id)
+                          .all()
+                    )
+                    for m in meals_with:
+                        db.delete(m)
+                    db.delete(f_db)
+                    db.commit()
 
-                # clean up any remaining empty meals
-                empty_meals = (
-                    db.query(MealModel)
-                      .outerjoin(MealFoodModel)
-                      .group_by(MealModel.id)
-                      .having(func.count(MealFoodModel.food_id) == 0)
-                      .all()
-                )
-                for m in empty_meals:
-                    db.delete(m)
-                db.commit()
+                    # Clean up any now‑empty meals
+                    empties = (
+                        db.query(MealModel)
+                          .outerjoin(MealFoodModel)
+                          .group_by(MealModel.id)
+                          .having(func.count(MealFoodModel.food_id) == 0)
+                          .all()
+                    )
+                    for m in empties:
+                        db.delete(m)
+                    db.commit()
 
-                st.success(f"Deleted '{name}' ({label}) and related meals.")
-            else:
-                st.error("Food not found.")
-            db.close()
+                    update_daily_plans_for_food(name0)
+                    st.success(f"Deleted '{name0} ({label0})' and related meals.")
+                else:
+                    st.error("Food not found.")
+
+
 
     # ─── Tab 3: View Foods ─────────────────────────────────────────────
     with tab_view:
