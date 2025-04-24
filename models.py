@@ -2,6 +2,26 @@ from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, Float, Dat
 from sqlalchemy.orm import relationship
 from db import Base
 
+
+class User(Base):
+    __tablename__ = 'users'
+
+    id               = Column(Integer, primary_key=True, index=True)
+    name             = Column(String, unique=True, nullable=False)
+    age              = Column(Integer, nullable=False)
+    sex              = Column(String, nullable=False)
+    height_cm        = Column(Float,   nullable=False)
+    weight_kg        = Column(Float,   nullable=False)
+    activity_level   = Column(String,  nullable=False)
+    # algorithm outputs
+    bmr_hb           = Column(Float,   nullable=False)
+    bmr_msj          = Column(Float,   nullable=False)
+    tdee_hb          = Column(Float,   nullable=False)
+    tdee_msj         = Column(Float,   nullable=False)
+    # optional goal
+    goal_type        = Column(String,  nullable=True)   # "Lose weight" / "Gain weight"
+    target_calories  = Column(Float,   nullable=True)
+
 class Food(Base):
     __tablename__ = "foods"
 

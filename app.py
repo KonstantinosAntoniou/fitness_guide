@@ -4,7 +4,7 @@ import os
 from sqlalchemy.orm import joinedload
 from sqlalchemy import func
 from db import init_db, SessionLocal, get_db
-from models import Food as FoodModel, Meal as MealModel, MealFood as MealFoodModel, DailyPlan
+from models import Food as FoodModel, Meal as MealModel, MealFood as MealFoodModel, DailyPlan, User
 from foods import Food as FoodService
 from meals import Meal as MealService
 from openai import OpenAI
@@ -89,13 +89,15 @@ def main():
         "Log/Delete Food",
         "View Foods",
         "Create Meal",
+        "Manage Meals",
         "View Meals",
         "Daily Planner",
         "Saved Day Plans",
         "ChatGPT"
     ])
     (tab_calc, tab_log, tab_view,
-     tab_create, tab_view_meals,
+     tab_create, tab_manage_meals,
+     tab_view_meals,
      tab_planner, tab_daily,
      tab_chat) = tabs
 
@@ -149,23 +151,22 @@ def main():
     # ─── Tab 1: Calculator ────────────────────────────────────────────
     with tab_calc:
         st.header("⚖️ BMR, TDEE & BMI Calculator")
-        col1, col2 = st.columns(2)
-        with col1:
-            age    = st.number_input("Age (years)", min_value=0, max_value=120, step=1)
-            sex    = st.selectbox("Sex", ("Male", "Female"))
-            weight = st.number_input("Weight (kg)", min_value=0.0, step=0.1)
-        with col2:
-            height_cm = st.number_input("Height (cm)", min_value=0.0, step=0.1)
-            activity_levels = {
-                "Sedentary (little/no exercise)":       1.2,
-                "Lightly active (1–3 days/week)":       1.375,
-                "Moderately active (3–5 days/week)":    1.55,
-                "Very active (6–7 days/week)":          1.725,
-                "Extra active (hard physical work)":     1.9
-            }
-            activity = st.selectbox("Activity Level", list(activity_levels.keys()))
+        st.subheader("👤 User Profile (optional)")
+        name       = st.text_input("Name", value="")
+        age        = st.number_input("Age (years)", min_value=0, max_value=120, step=1)
+        sex        = st.selectbox("Sex", ("Male", "Female"))
+        weight     = st.number_input("Weight (kg)", min_value=0.0, step=0.1)
+        height_cm  = st.number_input("Height (cm)", min_value=0.0, step=0.1)
+        activity_levels = {
+            "Sedentary":     1.2,
+            "Lightly active":1.375,
+            "Moderate":      1.55,
+            "Very active":   1.725,
+            "Extra active":  1.9
+        }
+        activity   = st.selectbox("Activity Level", list(activity_levels.keys()))
 
-        if st.button("Calculate BMR & TDEE"):
+        if st.button("Calculate BMR & TDEE", key="btn_calc_bmr_tdee"):
             h_m = height_cm / 100 if height_cm > 0 else 0
             bmi = weight / (h_m**2) if h_m > 0 else 0
 
@@ -198,7 +199,7 @@ def main():
         weight_change = st.number_input("Weight change (kg)", min_value=0.0, step=0.1)
         period        = st.selectbox("Period", ("Per week", "Per month", "Per year"))
 
-        if st.button("Calculate Calorie Goal"):
+        if st.button("Calculate Calorie Goal", key="btn_calc_calorie_goal"):
             # re‑compute TDEE to ensure variables are in scope
             if sex == "Male":
                 bmr_hb = 88.362 + (13.397 * weight) + (4.799 * height_cm) - (5.677 * age)
@@ -229,9 +230,33 @@ def main():
             • Target (MSJ): **{target_ms:.0f} kcal/day**
             """)
 
-    # ─── Tab 2: Log/Delete Food ─────────────────────────────────────────
+        avg_target = (target_hb + target_ms)/2 if 'target_hb' in locals() else None
+
+        if st.button("Save Profile", key="btn_save_profile"):
+            if not name.strip():
+                st.error("Name cannot be empty.")
+            else:
+                with get_db() as db:
+                    user = db.query(User).filter(User.name == name).first()
+                    if not user:
+                        user = User(name=name)
+                        db.add(user)
+                    # update fields
+                    user.age            = int(age)
+                    user.sex            = sex
+                    user.weight_kg      = float(weight)
+                    user.height_cm      = float(height_cm)
+                    user.activity_level = activity
+                    user.bmr_hb         = bmr_hb
+                    user.bmr_msj        = bmr_ms
+                    user.tdee_hb        = tdee_hb
+                    user.tdee_msj       = tdee_ms
+                    user.goal_type      = goal       # "Lose weight" or "Gain weight"
+                    user.target_calories= float(avg_target) if avg_target else None
+                    db.commit()
+                st.success(f"Profile for {name} saved.")
+
         # ─── Tab 2: Log / Edit / Delete Food ────────────────────────────────────
-        # ─── Tab 2: Log / Edit / Delete Food ──────────────────────────────────
     with tab_log:
         st.header("➕ Log • ✏️ Edit • ❌ Delete Food")
 
@@ -268,7 +293,7 @@ def main():
             sodium    = st.number_input("Sodium",        value=float(sod0), min_value=0.0)
 
             # Unconditionally include all three, but disable the irrelevant ones
-            submit_btn = st.form_submit_button("Log Food",    disabled=not is_new)
+            submit_btn = st.form_submit_button("Log Food", disabled=not is_new)
             update_btn = st.form_submit_button("Update Food", disabled=is_new)
             delete_btn = st.form_submit_button("Delete Food", disabled=is_new)
 
@@ -377,6 +402,107 @@ def main():
                 err = MealService(meal_name).create_meal(meal_data)
                 st.success(f"Meal '{meal_name}' created!") if err is None else st.error(err)
 
+    with tab_manage_meals:
+        st.header("✏️ Manage Meals")
+
+        # 1️⃣ Load all meals with their food associations eagerly
+        with get_db() as db:
+            meals = (
+                db.query(MealModel)
+                .options(
+                    joinedload(MealModel.meal_food_items)
+                        .joinedload(MealFoodModel.food)
+                )
+                .all()
+            )
+
+        meal_names = [m.name for m in meals]
+        options     = ["-- New Meal --"] + meal_names
+        choice      = st.selectbox("Select meal to edit/delete, or New:", options)
+        is_new      = (choice == "-- New Meal --")
+
+        # 2️⃣ Prefill form values
+        if not is_new:
+            m0            = choice
+            meal_instance = next(m for m in meals if m.name == m0)
+            foods0        = [
+                (mf.food.name, mf.food.label, mf.multiplier)
+                for mf in meal_instance.meal_food_items
+            ]
+        else:
+            m0     = ""
+            foods0 = []
+
+        new_name = st.text_input("Meal Name", value=m0)
+        df_foods = load_logged_foods()
+
+        # 3️⃣ Let user pick foods + multipliers
+        selected = st.multiselect("Select Foods", df_foods['Name'].tolist(), default=[f[0] for f in foods0])
+        meal_data = []
+        for fname in selected:
+            lbl = df_foods.loc[df_foods['Name']==fname, 'Label'].iloc[0]
+            default_mult = next((mult for (n,l,mult) in foods0 if n==fname), 1.0)
+            mult = st.number_input(
+                f"{fname} multiplier",
+                min_value=0.1, step=0.1,
+                value=float(default_mult),
+                key=f"mult_{fname}"
+            )
+            meal_data.append((fname, lbl, mult))
+
+        # 4️⃣ Action buttons (each with unique keys!)
+        create_btn = st.button("Create Meal", key="manage_create_meal", disabled=not is_new or not new_name.strip())
+        update_btn = st.button("Update Meal", key="manage_update_meal", disabled=is_new or not new_name.strip())
+        delete_btn = st.button("Delete Meal", key="manage_delete_meal", disabled=is_new)
+
+        # 5️⃣ Handle Create
+        if create_btn:
+            err = MealService(new_name).create_meal(meal_data)
+            if err:
+                st.error(err)
+            else:
+                st.success(f"Meal '{new_name}' created!")
+                st.experimental_rerun()
+
+        # 6️⃣ Handle Update (re-fetch inside session!)
+        if update_btn:
+            with get_db() as db:
+                m_db = db.query(MealModel).filter(MealModel.name == m0).first()
+                if m_db:
+                    # clear old associations
+                    db.query(MealFoodModel).filter(MealFoodModel.meal_id == m_db.id).delete()
+                    db.flush()
+                    # add new ones
+                    for fname, lbl, mult in meal_data:
+                        f_db = db.query(FoodModel).filter(
+                            FoodModel.name == fname,
+                            FoodModel.label == lbl
+                        ).first()
+                        db.add(MealFoodModel(
+                            meal_id    = m_db.id,
+                            food_id    = f_db.id,
+                            multiplier = mult
+                        ))
+                    # rename if changed
+                    m_db.name = new_name
+                    db.commit()
+                    st.success(f"Meal '{m0}' updated to '{new_name}'.")
+                    st.rerun()
+                else:
+                    st.error(f"Meal '{m0}' not found in DB.")
+
+        # 7️⃣ Handle Delete (also re-fetch)
+        if delete_btn:
+            with get_db() as db:
+                m_db = db.query(MealModel).filter(MealModel.name == m0).first()
+                if m_db:
+                    db.delete(m_db)
+                    db.commit()
+                    st.success(f"Meal '{m0}' deleted.")
+                    st.rerun()
+                else:
+                    st.error(f"Meal '{m0}' not found in DB.")
+
     # ─── Tab 5: View Meals ─────────────────────────────────────────────
     with tab_view_meals:
         st.header("📋 Logged Meals")
@@ -389,6 +515,19 @@ def main():
 
     # ─── Tab 6: Daily Planner ─────────────────────────────────────────
     with tab_planner:
+        with get_db() as db:
+            users = db.query(User).all()
+        user_opts = ["-- None --"] + [u.name for u in users]
+        chosen_user = st.selectbox("Select User (optional)", user_opts)
+        if chosen_user != "-- None --":
+            user = next(u for u in users if u.name==chosen_user)
+            avg_bmr  = (user.bmr_hb + user.bmr_msj) / 2
+            avg_tdee = (user.tdee_hb + user.tdee_msj) / 2
+            st.markdown(f"**BMR avg:** {avg_bmr:.0f}  **TDEE avg:** {avg_tdee:.0f}  "
+                        + (f"**Target:** {user.target_calories:.0f}" if user.target_calories else ""))
+        else:
+            user = None
+
         st.header("🍽️ Daily Planner")
         df_foods = load_logged_foods()
         df_meals = load_logged_meals()
@@ -400,6 +539,7 @@ def main():
         for i in range(int(num_meals)):
             st.subheader(f"Meal #{i+1}")
             choice = st.radio("Add", ("Food","Meal"), key=f"choice_{i}")
+            
             if choice == "Food":
                 sel = st.selectbox("Select food", df_foods['Name'].unique(), key=f"food_{i}")
                 mult = st.number_input("Portion multiplier", min_value=0.1, step=0.1, key=f"pmult_{i}")
@@ -413,20 +553,37 @@ def main():
                     st.warning("No meals logged yet. Please create meals first.")
                     break
                 sel = st.selectbox("Select meal", df_meals['Meal Name'].unique(), key=f"meal_{i}")
+                mult_meal = st.number_input("Meal multiplier", min_value=0.1, step=0.1, key=f"mmult_{i}", value=1.0)
                 if sel:
                     macros = MealService(sel).get_meal_macros(sel)
-                    for k,name in [('Calories','calories'),('Protein','protein'),('Carbs','carbs'),
-                                   ('Fat_Regular','fat_regular'),('Fat_Saturated','fat_saturated'),
-                                   ('Sodium','sodium')]:
-                        totals[k] += macros.get(name,0)
-                    plan_items.append(sel)
+                    totals['Calories']     += macros['calories']     * mult_meal
+                    totals['Protein']      += macros['protein']      * mult_meal
+                    totals['Carbs']        += macros['carbs']        * mult_meal
+                    totals['Fat_Regular']  += macros['fat_regular']  * mult_meal
+                    totals['Fat_Saturated']+= macros['fat_saturated']* mult_meal
+                    totals['Sodium']       += macros['sodium']       * mult_meal
+                    plan_items.append(f"{sel} x{mult_meal}")
 
-        if st.button("Calculate Total Macros"):
+        if st.button("Calculate Total Macros", key="planner_calc_macros"):
             st.write("## Total Macros for Today")
             for k,v in totals.items():
+                if k == "Calories":
+                    C = totals['Calories']
+                    color = "black"
+                    if user:
+                        if user.target_calories:
+                            if user.goal_type == "Lose weight":
+                                color = "green" if C <= user.target_calories else "red"
+                            else:
+                                color = "green" if C >= user.target_calories else "red"
+                        else:
+                            tgt = (user.tdee_hb + user.tdee_msj)/2
+                            tol = tgt * 0.1
+                            color = "green" if abs(C - tgt) <= tol else "red"
+                    st.markdown(f"**Total Calories:** <span style='color:{color}'>{C:.2f}</span>", unsafe_allow_html=True)
                 st.write(f"**{k.replace('_',' ')}:** {v:.2f}")
 
-        if st.button("Save This Day’s Plan"):
+        if st.button("Save This Day’s Plan to DB", key="planner_save_plan"):
             if not plan_items:
                 st.warning("No meals or foods selected.")
                 return
@@ -483,7 +640,7 @@ def main():
     with tab_chat:
         st.header("💬 Nutrition & Training ChatGPT")
         question = st.text_area("Ask a question about nutrition or training:")
-        if st.button("Send"):
+        if st.button("Send", key="chat_send"):
             if not question.strip():
                 st.warning("Please enter a question.")
             else:
