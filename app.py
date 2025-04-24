@@ -158,11 +158,11 @@ def main():
         weight     = st.number_input("Weight (kg)", min_value=0.0, step=0.1)
         height_cm  = st.number_input("Height (cm)", min_value=0.0, step=0.1)
         activity_levels = {
-            "Sedentary":     1.2,
-            "Lightly active":1.375,
-            "Moderate":      1.55,
-            "Very active":   1.725,
-            "Extra active":  1.9
+            "Sedentary (Little to no exercise)":     1.2,
+            "Lightly active (1 to 3 Days a week light exercise)":1.375,
+            "Moderate (3 to 5 Days a week moderate exercise)":      1.55,
+            "Very active (6 to 7 Days a week)":   1.725,
+            "Extra active (extremely active / professional athlete)":  1.9
         }
         activity   = st.selectbox("Activity Level", list(activity_levels.keys()))
 
