@@ -233,6 +233,16 @@ def main():
         avg_target = (target_hb + target_ms)/2 if 'target_hb' in locals() else None
 
         if st.button("Save Profile", key="btn_save_profile"):
+            if sex == "Male":
+                bmr_hb = 88.362 + (13.397 * weight) + (4.799 * height_cm) - (5.677 * age)
+                bmr_ms = (10 * weight) + (6.25 * height_cm) - (5 * age) + 5
+            else:
+                bmr_hb = 447.593 + (9.247 * weight) + (3.098 * height_cm) - (4.330 * age)
+                bmr_ms = (10 * weight) + (6.25 * height_cm) - (5 * age) - 161
+
+            factor  = activity_levels[activity]
+            tdee_hb = bmr_hb * factor
+            tdee_ms = bmr_ms * factor
             if not name.strip():
                 st.error("Name cannot be empty.")
             else:
