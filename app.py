@@ -12,6 +12,62 @@ from openai import OpenAIError
 from datetime import date
 
 
+def export_foods_to_excel(path: str = 'foods_log.xlsx'):
+    # Grab all foods from the DB and write to Excel
+    with get_db() as db:
+        foods = db.query(FoodModel).all()
+    df = pd.DataFrame([{
+        'Name':        f.name,
+        'Label':       f.label,
+        'Measurement': f.measurement,
+        'Calories':    f.calories,
+        'Protein':     f.protein,
+        'Carbs':       f.carbs,
+        'Fat_Saturated': f.fat_saturated,
+        'Fat_Regular': f.fat_regular,
+        'Sodium':      f.sodium
+    } for f in foods])
+    df.to_excel(path, index=False)
+
+def export_meals_to_excel(path: str = 'meals_log.xlsx'):
+    # Reconstruct each meal → one row per food + Total row
+    rows = []
+    with get_db() as db:
+        meals = db.query(MealModel).all()
+        for m in meals:
+            # each food in the meal
+            for mf in m.meal_food_items:
+                f = mf.food
+                rows.append({
+                    'Meal_Name':  m.name,
+                    'Food_Name':  f"{mf.multiplier}x {f.name}",
+                    'Label':      f.label,
+                    'Measurement': f"{mf.multiplier}x {f.measurement}",
+                    'Calories':   f.calories * mf.multiplier,
+                    'Protein':    f.protein  * mf.multiplier,
+                    'Carbs':      f.carbs    * mf.multiplier,
+                    'Fat_Saturated': f.fat_saturated * mf.multiplier,
+                    'Fat_Regular':   f.fat_regular   * mf.multiplier,
+                    'Sodium':     f.sodium   * mf.multiplier
+                })
+            # add a total row
+            total = MealService(m.name).get_meal_macros(m.name)
+            rows.append({
+                'Meal_Name':   m.name,
+                'Food_Name':   'Total',
+                'Label':       '',
+                'Measurement': '',
+                'Calories':    total['calories'],
+                'Protein':     total['protein'],
+                'Carbs':       total['carbs'],
+                'Fat_Saturated': total['fat_saturated'],
+                'Fat_Regular':   total['fat_regular'],
+                'Sodium':      total['sodium']
+            })
+    df = pd.DataFrame(rows)
+    df.to_excel(path, index=False)
+
+
 def update_daily_plans_for_food(food_name: str):
     """
     Recalculate all DailyPlan totals for plans whose 'meals' string mentions this food.
@@ -388,6 +444,10 @@ def main():
         else:
             st.dataframe(df_foods, use_container_width=True)
 
+        if st.button("Export Foods to foods_log.xlsx", key="export_foods"):
+            export_foods_to_excel()
+            st.success("All foods exported to foods_log.xlsx")
+
     # ─── Tab 4: Create Meal ────────────────────────────────────────────
     with tab_create:
         st.header("🥗 Create Meal")
@@ -522,6 +582,10 @@ def main():
         else:
             df_meals['Food Names'] = df_meals['Food Names'].str.replace("\n", "<br>")
             st.markdown(df_meals.to_html(escape=False, index=False), unsafe_allow_html=True)
+            
+        if st.button("Export Meals to meals_log.xlsx", key="export_meals"):
+            export_meals_to_excel()
+            st.success("All meals exported to meals_log.xlsx")
 
     # ─── Tab 6: Daily Planner ─────────────────────────────────────────
     with tab_planner:
