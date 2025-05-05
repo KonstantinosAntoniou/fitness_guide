@@ -13,4 +13,6 @@ def reset_all():
     print("✅ All records deleted. Database is now clean.")
 
 if __name__ == "__main__":
+    Base.metadata.drop_all(bind=engine)
+    Base.metadata.create_all(bind=engine)
     reset_all()

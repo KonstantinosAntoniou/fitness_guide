@@ -10,6 +10,8 @@ from meals import Meal as MealService
 from openai import OpenAI
 from openai import OpenAIError
 from datetime import date
+import time
+from io import BytesIO
 
 
 def export_foods_to_excel(path: str = 'foods_log.xlsx'):
@@ -149,12 +151,14 @@ def main():
         "View Meals",
         "Daily Planner",
         "Saved Day Plans",
+        "Weekly Plan",
         "ChatGPT"
     ])
     (tab_calc, tab_log, tab_view,
      tab_create, tab_manage_meals,
      tab_view_meals,
      tab_planner, tab_daily,
+     tab_weekly,
      tab_chat) = tabs
 
     # ─── Utils ───────────────────────────────────────────────────────
@@ -214,13 +218,19 @@ def main():
         weight     = st.number_input("Weight (kg)", min_value=0.0, step=0.1)
         height_cm  = st.number_input("Height (cm)", min_value=0.0, step=0.1)
         activity_levels = {
-            "Sedentary (Little to no exercise)":     1.2,
-            "Lightly active (1 to 3 Days a week light exercise)":1.375,
-            "Moderate (3 to 5 Days a week moderate exercise)":      1.55,
-            "Very active (6 to 7 Days a week)":   1.725,
-            "Extra active (extremely active / professional athlete)":  1.9
+            "Completely Paralyzed, Comatose, Unable to Move Without the Aid of Others (1.0)": 1.0,
+            "Immobile, Stationary with Some Arm Movement, Bedridden or Partially Paralyzed (1.05)": 1.05,
+            "Constricted Lifestyle, Movement is Limited to a Confined Space, Almost Always Sitting or Laying (1.1)": 1.1,
+            "Working From Home with Little to No Travel, No Exercise, Some Walking, Mostly Sitting or Laying (1.16)": 1.16,
+            "Sedentary Lifestyle, Little or No Exercise, Moderate Walking, Desk Job (Away from Home) (1.2)": 1.2,
+            "Slightly Active, Exercise or Light Sports 1 to 3 Days a Week, Light Jogging or Walking 3 to 4 Days a Week (1.375)": 1.375,
+            "Lightly Active, Exercise or Moderate Sports 2 to 3 Days a Week, Light Jogging or Walking 5 to 7 Days a Week (1.425)": 1.425,
+            "Moderately Active, Physical Work, Exercise, or Sports 4 to 5 Days a Week, Construction Laborer (1.55)": 1.55,
+            "Very Active, Heavy Physical Work, Exercise, or Sports 6 to 7 Days a Week, Hard Laborer (1.75)": 1.75,
+            "Extremely Active, Very Heavy Physical Work or Exercise Every Day, Professional/Olympic Athlete (1.9)": 1.9
         }
-        activity   = st.selectbox("Activity Level", list(activity_levels.keys()))
+
+        activity = st.selectbox("Activity Level", list(activity_levels.keys()))
 
         if st.button("Calculate BMR & TDEE", key="btn_calc_bmr_tdee"):
             h_m = height_cm / 100 if height_cm > 0 else 0
@@ -471,6 +481,8 @@ def main():
             else:
                 err = MealService(meal_name).create_meal(meal_data)
                 st.success(f"Meal '{meal_name}' created!") if err is None else st.error(err)
+                time.sleep(2)
+                st.rerun()
 
     with tab_manage_meals:
         st.header("✏️ Manage Meals")
@@ -516,7 +528,7 @@ def main():
                 f"{fname} multiplier",
                 min_value=0.1, step=0.1,
                 value=float(default_mult),
-                key=f"mult_{fname}"
+                key=f"manage_mult_{fname}"
             )
             meal_data.append((fname, lbl, mult))
 
@@ -532,7 +544,8 @@ def main():
                 st.error(err)
             else:
                 st.success(f"Meal '{new_name}' created!")
-                st.experimental_rerun()
+                time.sleep(2)
+                st.rerun()
 
         # 6️⃣ Handle Update (re-fetch inside session!)
         if update_btn:
@@ -557,6 +570,7 @@ def main():
                     m_db.name = new_name
                     db.commit()
                     st.success(f"Meal '{m0}' updated to '{new_name}'.")
+                    time.sleep(2)
                     st.rerun()
                 else:
                     st.error(f"Meal '{m0}' not found in DB.")
@@ -569,6 +583,7 @@ def main():
                     db.delete(m_db)
                     db.commit()
                     st.success(f"Meal '{m0}' deleted.")
+                    time.sleep(2)
                     st.rerun()
                 else:
                     st.error(f"Meal '{m0}' not found in DB.")
@@ -582,7 +597,7 @@ def main():
         else:
             df_meals['Food Names'] = df_meals['Food Names'].str.replace("\n", "<br>")
             st.markdown(df_meals.to_html(escape=False, index=False), unsafe_allow_html=True)
-            
+
         if st.button("Export Meals to meals_log.xlsx", key="export_meals"):
             export_meals_to_excel()
             st.success("All meals exported to meals_log.xlsx")
@@ -666,6 +681,7 @@ def main():
             db = SessionLocal()
             new_plan = DailyPlan(
                 date=date.today(),
+                user_id=user.id if user else None,
                 meals=plan_str,
                 calories=totals['Calories'],
                 protein=totals['Protein'],
@@ -710,6 +726,94 @@ def main():
                 </style>
                 """, unsafe_allow_html=True
             )
+
+    with tab_weekly:
+        st.header("🗓️ Weekly Meal Plan")
+
+        # 1) Let user pick a date range
+        start, end = st.date_input(
+            "Select week range",
+            value=[date.today() - pd.Timedelta(days=6), date.today()]
+        )
+
+        # 2) Load plans from DB
+        with get_db() as db:
+            plans = (
+                db.query(DailyPlan)
+                    .filter(DailyPlan.date >= start, DailyPlan.date <= end)
+                    .order_by(DailyPlan.date)
+                    .all()
+            )
+
+        if not plans:
+            st.write("No daily plans in that range.")
+        else:
+            # 3) Build DataFrame
+            df = pd.DataFrame([{
+                'Date': p.date,
+                'Meals': p.meals,
+                'Calories': p.calories,
+                'Protein': p.protein,
+                'Carbs': p.carbs,
+                'Fat_Regular': p.fat_regular,
+                'Fat_Saturated': p.fat_saturated,
+                'Sodium': p.sodium
+            } for p in plans])
+
+            st.dataframe(df, use_container_width=True)
+
+            # 4) Excel export
+            towrite = BytesIO()
+            df.to_excel(towrite, index=False, engine='openpyxl')
+            towrite.seek(0)
+            st.download_button(
+                "📥 Download as Excel",
+                data=towrite,
+                file_name="weekly_plan.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+
+            # 6) Charts: calories, fat, protein per day
+            st.subheader("📈 Weekly Macros Trends")
+            dates    = df['Date'].tolist()
+            calories = df['Calories'].tolist()
+            fat      = df['Fat_Regular'].tolist()
+            protein  = df['Protein'].tolist()
+
+            # Use python_user_visible to render charts:
+            code = """
+        import matplotlib.pyplot as plt
+        from datetime import datetime
+
+        # convert dates if needed
+        dates = [datetime.strptime(str(d), '%Y-%m-%d') for d in dates]
+
+        # Calories
+        plt.figure()
+        plt.plot(dates, calories, marker='o')
+        plt.title('Calories per Day')
+        plt.xticks(rotation=45)
+        st.pyplot(plt)
+
+        # Fat
+        plt.figure()
+        plt.plot(dates, fat, marker='o')
+        plt.title('Fat (regular) per Day')
+        plt.xticks(rotation=45)
+        st.pyplot(plt)
+
+        # Protein
+        plt.figure()
+        plt.plot(dates, protein, marker='o')
+        plt.title('Protein per Day')
+        plt.xticks(rotation=45)
+        st.pyplot(plt)
+        """
+            exec(code, {'plt': __import__('matplotlib.pyplot'), 
+                        'dates': dates, 'calories': calories, 
+                        'fat': fat, 'protein': protein,
+                        'st': st})
+
     # ─── Tab 8: ChatGPT Assistant ─────────────────────────────────────
     with tab_chat:
         st.header("💬 Nutrition & Training ChatGPT")

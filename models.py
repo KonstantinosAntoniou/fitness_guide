@@ -22,6 +22,8 @@ class User(Base):
     goal_type        = Column(String,  nullable=True)   # "Lose weight" / "Gain weight"
     target_calories  = Column(Float,   nullable=True)
 
+    daily_plans = relationship("DailyPlan", back_populates="user", cascade="all, delete-orphan")
+
 class Food(Base):
     __tablename__ = "foods"
 
@@ -62,6 +64,7 @@ class DailyPlan(Base):
 
     id            = Column(Integer, primary_key=True, index=True)
     date          = Column(Date,   nullable=False)
+    user_id         = Column(Integer, ForeignKey('users.id'), nullable=True)   # ← FK to users.id
     meals         = Column(String, nullable=False)   # e.g. "Chicken x2; Salad x1"
     calories      = Column(Float,  nullable=False)
     protein       = Column(Float,  nullable=False)
@@ -69,3 +72,5 @@ class DailyPlan(Base):
     fat_regular   = Column(Float,  nullable=False)
     fat_saturated = Column(Float,  nullable=False)
     sodium        = Column(Float,  nullable=False)
+
+    user = relationship("User", back_populates="daily_plans")
