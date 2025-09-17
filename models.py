@@ -20,6 +20,8 @@ class User(Base):
     tdee_msj         = Column(Float,   nullable=False)
     # optional goal
     goal_type        = Column(String,  nullable=True)   # "Lose weight" / "Gain weight"
+    goal_period      = Column(String,  nullable=True)   # "Per week" / "Per month" / "Per year"
+    weight_change_amount = Column(Float, nullable=True) # Amount of weight to change
     target_calories  = Column(Float,   nullable=True)
 
     daily_plans = relationship("DailyPlan", back_populates="user", cascade="all, delete-orphan")
