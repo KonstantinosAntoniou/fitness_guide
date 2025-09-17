@@ -187,8 +187,9 @@ def generate_weekly_pdf_report(user, weekly_data, chart_figures=None):
             if item['Day'] not in ['**WEEKLY TOTAL**', '**DAILY AVERAGE**'] and item['Calories'] > 0:
                 story.append(Paragraph(f"<b>{item['Day']} ({item['Date']})</b>", styles['Heading3']))
                 
-                # Clean up meals text for PDF
+                # Clean up meals text for PDF and handle HTML spaces
                 meals_text = item['Meals'].replace('<br>', '\n').replace('&lt;', '<').replace('&gt;', '>')
+                # HTML spaces are already in the correct format for PDF
                 meals_para = Paragraph(meals_text.replace('\n', '<br/>'), styles['Normal'])
                 story.append(meals_para)
                 story.append(Spacer(1, 10))
@@ -259,15 +260,75 @@ def generate_weekly_pdf_report(user, weekly_data, chart_figures=None):
 
 def format_detailed_plan_item(item_type: str, item_name: str, multiplier: float, db_session) -> str:
     """
-    Format a plan item with detailed food information.
-    For foods: returns "2.0x Chicken Breast (Cooked, Grilled) - 100g"
-    For meals: expands to show individual foods within the meal
+    Format a plan item with detailed food information using dots and calculated measurements.
+    For foods: returns "• 200g Chicken Breast (Grilled)"
+    For meals: expands to show individual foods within the meal with calculated amounts
     """
+    
+    def parse_measurement_and_calculate(measurement: str, multiplier: float) -> str:
+        """Parse measurement and calculate the actual amount."""
+        import re
+        
+        # Handle special case: "1(62.5g)" - extract just the number
+        match = re.match(r'^(\d+(?:\.\d+)?)\(.*?\)$', measurement.strip())
+        if match:
+            amount = float(match.group(1))
+            calculated_amount = amount * multiplier
+            
+            if calculated_amount == int(calculated_amount):
+                return f"{int(calculated_amount)}"
+            else:
+                return f"{calculated_amount:.1f}"
+        
+        # Handle measurements like "1(from 1 egg)" - just use the number
+        match = re.match(r'^(\d+(?:\.\d+)?)\(.*?\)$', measurement.strip())
+        if match:
+            amount = float(match.group(1))
+            calculated_amount = amount * multiplier
+            
+            if calculated_amount == int(calculated_amount):
+                return f"{int(calculated_amount)}"
+            else:
+                return f"{calculated_amount:.1f}"
+        
+        # Extract number and unit from measurement like "100g", "1 tbsp", etc.
+        match = re.match(r'^(\d+(?:\.\d+)?)\s*([a-zA-Z]+)$', measurement.strip())
+        if match:
+            amount = float(match.group(1))
+            unit = match.group(2)
+            calculated_amount = amount * multiplier
+            
+            # Format nicely - remove .0 for whole numbers
+            if calculated_amount == int(calculated_amount):
+                return f"{int(calculated_amount)}{unit}"
+            else:
+                return f"{calculated_amount:.1f}{unit}"
+        
+        # Handle measurements like "1 medium", "1 large", etc.
+        match = re.match(r'^(\d+(?:\.\d+)?)\s+(.+)$', measurement.strip())
+        if match:
+            amount = float(match.group(1))
+            unit = match.group(2)
+            calculated_amount = amount * multiplier
+            
+            if calculated_amount == int(calculated_amount):
+                return f"{int(calculated_amount)}{unit}"
+            else:
+                return f"{calculated_amount:.1f}{unit}"
+        
+        # Fallback - just add multiplier info
+        return f"{multiplier}x {measurement}"
+    
     if item_type == "food":
         food = db_session.query(FoodModel).filter(FoodModel.name == item_name).first()
         if food:
-            return f"{multiplier}x {food.name} ({food.label}) - {food.measurement}"
-        return f"{multiplier}x {item_name}"
+            calculated_measurement = parse_measurement_and_calculate(food.measurement, multiplier)
+            # Hide label if it's just "-"
+            if food.label == "-":
+                return f"• {calculated_measurement} {food.name}"
+            else:
+                return f"• {calculated_measurement} {food.name} ({food.label})"
+        return f"• {multiplier}x {item_name}"
     
     elif item_type == "meal":
         meal = (
@@ -284,14 +345,47 @@ def format_detailed_plan_item(item_type: str, item_name: str, multiplier: float,
             for mf in meal.meal_food_items:
                 food = mf.food
                 total_mult = mf.multiplier * multiplier
-                meal_foods.append(f"{food.name}[{food.label} - {food.measurement}] x{total_mult}")
+                calculated_measurement = parse_measurement_and_calculate(food.measurement, total_mult)
+                # Hide label if it's just "-" and use HTML spaces for indentation
+                if food.label == "-":
+                    meal_foods.append(f"&nbsp;&nbsp;&nbsp;&nbsp;- {calculated_measurement} {food.name}")
+                else:
+                    meal_foods.append(f"&nbsp;&nbsp;&nbsp;&nbsp;- {calculated_measurement} {food.name} ({food.label})")
             
-            # Format as: 1xbeef_n_rice{Food[label - measurement], ...}
-            ingredients_str = ", ".join(meal_foods)
-            return f"{multiplier}x{item_name}{{{ingredients_str}}}"
-        return f"{multiplier}x {item_name} (meal)"
+            # Format as: • meal_name\n\t- ingredients
+            ingredients_str = "\n".join(meal_foods)
+            return f"• {item_name}:\n{ingredients_str}"
+        return f"• {item_name} (meal)"
     
-    return f"{multiplier}x {item_name}"
+    elif item_type == "customized_meal":
+        # For customized meals, multiplier is actually the ingredient_data list
+        ingredient_data = multiplier  # This is actually [(food_name, food_label, mult), ...]
+        meal_foods = []
+        for food_name, food_label, mult in ingredient_data:
+            # Get food measurement info
+            food = db_session.query(FoodModel).filter(
+                FoodModel.name == food_name,
+                FoodModel.label == food_label
+            ).first()
+            if food:
+                calculated_measurement = parse_measurement_and_calculate(food.measurement, mult)
+                # Hide label if it's just "-" and use HTML spaces for indentation
+                if food.label == "-":
+                    meal_foods.append(f"&nbsp;&nbsp;&nbsp;&nbsp;- {calculated_measurement} {food.name}")
+                else:
+                    meal_foods.append(f"&nbsp;&nbsp;&nbsp;&nbsp;- {calculated_measurement} {food.name} ({food.label})")
+            else:
+                # Fallback case - hide label if it's "-"
+                if food_label == "-":
+                    meal_foods.append(f"\t- {mult}x {food_name}")
+                else:
+                    meal_foods.append(f"\t- {mult}x {food_name} ({food_label})")
+        
+        # Format as: • Custom meal_name:\n\t- ingredients
+        ingredients_str = "\n".join(meal_foods)
+        return f"• Custom {item_name}:\n{ingredients_str}"
+    
+    return f"• {multiplier}x {item_name}"
 
 
 def update_daily_plans_for_food(food_name: str):
@@ -1148,16 +1242,104 @@ def main():
                     st.warning("No meals logged yet. Please create meals first.")
                     break
                 sel = st.selectbox("Select meal", df_meals['Meal Name'].unique(), key=f"meal_{i}")
-                mult_meal = st.number_input("Meal multiplier", min_value=0.1, step=0.1, key=f"mmult_{i}", value=1.0)
+                
                 if sel:
-                    macros = MealService(sel).get_meal_macros(sel)
-                    totals['Calories']     += macros['calories']     * mult_meal
-                    totals['Protein']      += macros['protein']      * mult_meal
-                    totals['Carbs']        += macros['carbs']        * mult_meal
-                    totals['Fat_Regular']  += macros['fat_regular']  * mult_meal
-                    totals['Fat_Saturated']+= macros['fat_saturated']* mult_meal
-                    totals['Sodium']       += macros['sodium']       * mult_meal
-                    plan_items.append(("meal", sel, mult_meal))
+                    # Get meal details with ingredients
+                    with get_db() as db:
+                        meal_obj = (
+                            db.query(MealModel)
+                            .options(
+                                joinedload(MealModel.meal_food_items)
+                                    .joinedload(MealFoodModel.food)
+                            )
+                            .filter(MealModel.name == sel)
+                            .first()
+                        )
+                    
+                    if meal_obj:
+                        # Option to customize ingredients or use default
+                        customize_option = st.radio(
+                            "Meal customization:",
+                            ("Use default meal", "Customize ingredients"),
+                            key=f"customize_{i}"
+                        )
+                        
+                        if customize_option == "Use default meal":
+                            # Simple meal multiplier (original behavior)
+                            mult_meal = st.number_input("Meal multiplier", min_value=0.1, step=0.1, key=f"mmult_{i}", value=1.0)
+                            
+                            # Calculate macros using default meal composition
+                            macros = MealService(sel).get_meal_macros(sel)
+                            totals['Calories']     += macros['calories']     * mult_meal
+                            totals['Protein']      += macros['protein']      * mult_meal
+                            totals['Carbs']        += macros['carbs']        * mult_meal
+                            totals['Fat_Regular']  += macros['fat_regular']  * mult_meal
+                            totals['Fat_Saturated']+= macros['fat_saturated']* mult_meal
+                            totals['Sodium']       += macros['sodium']       * mult_meal
+                            plan_items.append(("meal", sel, mult_meal))
+                            
+                        else:
+                            # Customize individual ingredients
+                            st.write(f"**Customize ingredients for {sel}:**")
+                            
+                            # Store individual ingredient data
+                            ingredient_data = []
+                            ingredient_totals = {
+                                'calories': 0, 'protein': 0, 'carbs': 0,
+                                'fat_regular': 0, 'fat_saturated': 0, 'sodium': 0
+                            }
+                            
+                            for j, mf in enumerate(meal_obj.meal_food_items):
+                                food = mf.food
+                                default_mult = mf.multiplier
+                                
+                                # Show ingredient with measurement info
+                                ingredient_mult = st.number_input(
+                                    f"{food.label} {food.name} multiplier ({food.measurement})",
+                                    min_value=0.0, step=0.1,
+                                    value=float(default_mult),
+                                    key=f"ingredient_{i}_{j}_{food.id}"
+                                )
+                                
+                                # Calculate macros for this ingredient
+                                ingredient_calories = food.calories * ingredient_mult
+                                ingredient_protein = food.protein * ingredient_mult
+                                ingredient_carbs = food.carbs * ingredient_mult
+                                ingredient_fat_regular = food.fat_regular * ingredient_mult
+                                ingredient_fat_saturated = food.fat_saturated * ingredient_mult
+                                ingredient_sodium = food.sodium * ingredient_mult
+                                
+                                # Add to totals
+                                ingredient_totals['calories'] += ingredient_calories
+                                ingredient_totals['protein'] += ingredient_protein
+                                ingredient_totals['carbs'] += ingredient_carbs
+                                ingredient_totals['fat_regular'] += ingredient_fat_regular
+                                ingredient_totals['fat_saturated'] += ingredient_fat_saturated
+                                ingredient_totals['sodium'] += ingredient_sodium
+                                
+                                # Store for plan_items
+                                ingredient_data.append((food.name, food.label, ingredient_mult))
+                            
+                            # Add ingredient totals to overall totals
+                            totals['Calories'] += ingredient_totals['calories']
+                            totals['Protein'] += ingredient_totals['protein']
+                            totals['Carbs'] += ingredient_totals['carbs']
+                            totals['Fat_Regular'] += ingredient_totals['fat_regular']
+                            totals['Fat_Saturated'] += ingredient_totals['fat_saturated']
+                            totals['Sodium'] += ingredient_totals['sodium']
+                            
+                            # Store as customized meal for plan_items
+                            plan_items.append(("customized_meal", sel, ingredient_data))
+                            
+                            # Show preview of customized meal
+                            st.write("**Customized meal preview:**")
+                            col1, col2, col3 = st.columns(3)
+                            with col1:
+                                st.metric("Calories", f"{ingredient_totals['calories']:.0f}")
+                            with col2:
+                                st.metric("Protein", f"{ingredient_totals['protein']:.1f}g")
+                            with col3:
+                                st.metric("Carbs", f"{ingredient_totals['carbs']:.1f}g")
 
         if st.button("Calculate Total Macros", key="planner_calc_macros"):
             st.write("## Total Macros for Today")
@@ -1359,13 +1541,13 @@ def main():
                         # Show the plans table
                         df_plans = pd.DataFrame([{
                             'Date': p.date,
-                            'Meals': p.meals.replace('\n', '<br>'),
-                            'Calories': p.calories,
-                            'Protein': p.protein,
-                            'Carbs': p.carbs,
-                            'Fat_Regular': p.fat_regular,
-                            'Fat_Saturated': p.fat_saturated,
-                            'Sodium': p.sodium
+                            'Meals': p.meals.replace('\n', '<br>').replace('&nbsp;', ' '),
+                            'Calories': round(p.calories),
+                            'Protein': round(p.protein, 1),
+                            'Carbs': round(p.carbs, 1),
+                            'Fat_Regular': round(p.fat_regular, 1),
+                            'Fat_Saturated': round(p.fat_saturated, 1),
+                            'Sodium': round(p.sodium)
                         } for p in user_plan_list])
                         st.markdown(df_plans.to_html(escape=False, index=False), unsafe_allow_html=True)
                         st.markdown("---")
@@ -1405,13 +1587,13 @@ def main():
                     # Show all plans table
                     df_plans = pd.DataFrame([{
                         'Date': p.date,
-                        'Meals': p.meals.replace('\n', '<br>'),
-                        'Calories': p.calories,
-                        'Protein': p.protein,
-                        'Carbs': p.carbs,
-                        'Fat_Regular': p.fat_regular,
-                        'Fat_Saturated': p.fat_saturated,
-                        'Sodium': p.sodium
+                        'Meals': p.meals.replace('\n', '<br>').replace('&nbsp;', ' '),
+                        'Calories': round(p.calories),
+                        'Protein': round(p.protein, 1),
+                        'Carbs': round(p.carbs, 1),
+                        'Fat_Regular': round(p.fat_regular, 1),
+                        'Fat_Saturated': round(p.fat_saturated, 1),
+                        'Sodium': round(p.sodium)
                     } for p in plans])
                     st.markdown(df_plans.to_html(escape=False, index=False), unsafe_allow_html=True)
             st.markdown(
@@ -1465,24 +1647,46 @@ def main():
                     # Create a summary of meals/foods for this plan
                     meals_summary = []
                     meal_items = p.meals.split('\n')
-                    for item in meal_items[:3]:  # Show first 3 items
+                    
+                    for item in meal_items:
                         if item.strip():
+                            # Clean up HTML entities and bullet points
+                            clean_item = item.replace('&nbsp;', ' ').replace('•', '').strip()
+                            
+                            # Skip ingredient lines (those that start with spaces or dashes)
+                            if clean_item.startswith('- '):
+                                continue
+                                
                             # Extract the main part before any detailed info
-                            if '{' in item:
-                                # It's a meal with ingredients
-                                meal_name = item.split('{')[0].strip()
-                                meals_summary.append(meal_name)
+                            if ':' in clean_item and not clean_item.startswith('Custom'):
+                                # It's a meal header (e.g., "classic_yogurt:")
+                                meal_name = clean_item.split(':')[0].strip()
+                                if meal_name:
+                                    meals_summary.append(meal_name)
+                            elif clean_item.startswith('Custom'):
+                                # Custom meal (e.g., "Custom breakfast_bowl:")
+                                meal_name = clean_item.replace('Custom', '').split(':')[0].strip()
+                                if meal_name:
+                                    meals_summary.append(f"Custom_{meal_name}")
+                            elif '{' in clean_item:
+                                # Old format meal with ingredients - shouldn't happen with new format
+                                meal_name = clean_item.split('{')[0].strip()
+                                if meal_name:
+                                    meals_summary.append(meal_name)
                             else:
-                                # It's a simple food
-                                food_name = item.split('(')[0].strip()
-                                meals_summary.append(food_name)
+                                # It's a simple food - extract just the food name
+                                parts = clean_item.split(' ', 1)
+                                if len(parts) > 1:
+                                    # Remove measurement (e.g., "200g") and get food name
+                                    food_part = parts[1]
+                                    food_name = food_part.split('(')[0].strip()
+                                    if food_name:
+                                        meals_summary.append(food_name)
                     
-                    if len(meal_items) > 3:
-                        meals_summary.append("...")
-                    
+                    # Create summary text
                     summary_text = ", ".join(meals_summary)
-                    if len(summary_text) > 50:
-                        summary_text = summary_text[:47] + "..."
+                    if len(summary_text) > 60:
+                        summary_text = summary_text[:57] + "..."
                     
                     plan_display = f"{summary_text} | {p.calories:.0f}cal, {p.protein:.0f}g protein"
                     plan_options.append(plan_display)
@@ -1522,13 +1726,13 @@ def main():
                             weekly_data.append({
                                 'Day': day,
                                 'Date': plan.date,
-                                'Calories': plan.calories,
-                                'Protein': plan.protein,
-                                'Carbs': plan.carbs,
-                                'Fat_Regular': plan.fat_regular,
-                                'Fat_Saturated': plan.fat_saturated,
-                                'Sodium': plan.sodium,
-                                'Meals': plan.meals.replace('\n', '<br>')
+                                'Calories': round(plan.calories),
+                                'Protein': round(plan.protein, 1),
+                                'Carbs': round(plan.carbs, 1),
+                                'Fat_Regular': round(plan.fat_regular, 1),
+                                'Fat_Saturated': round(plan.fat_saturated, 1),
+                                'Sodium': round(plan.sodium),
+                                'Meals': plan.meals.replace('\n', '<br>').replace('&nbsp;', ' ')
                             })
                             total_calories += plan.calories
                             total_protein += plan.protein
@@ -1555,24 +1759,24 @@ def main():
                         weekly_data.append({
                             'Day': '**WEEKLY TOTAL**',
                             'Date': f'{num_planned_days} days',
-                            'Calories': total_calories,
-                            'Protein': total_protein,
-                            'Carbs': total_carbs,
-                            'Fat_Regular': total_fat_regular,
-                            'Fat_Saturated': total_fat_saturated,
-                            'Sodium': total_sodium,
+                            'Calories': round(total_calories),
+                            'Protein': round(total_protein, 1),
+                            'Carbs': round(total_carbs, 1),
+                            'Fat_Regular': round(total_fat_regular, 1),
+                            'Fat_Saturated': round(total_fat_saturated, 1),
+                            'Sodium': round(total_sodium),
                             'Meals': f'{num_planned_days} days planned'
                         })
                         
                         weekly_data.append({
                             'Day': '**DAILY AVERAGE**',
                             'Date': 'avg/day',
-                            'Calories': total_calories / num_planned_days,
-                            'Protein': total_protein / num_planned_days,
-                            'Carbs': total_carbs / num_planned_days,
-                            'Fat_Regular': total_fat_regular / num_planned_days,
-                            'Fat_Saturated': total_fat_saturated / num_planned_days,
-                            'Sodium': total_sodium / num_planned_days,
+                            'Calories': round(total_calories / num_planned_days),
+                            'Protein': round(total_protein / num_planned_days, 1),
+                            'Carbs': round(total_carbs / num_planned_days, 1),
+                            'Fat_Regular': round(total_fat_regular / num_planned_days, 1),
+                            'Fat_Saturated': round(total_fat_saturated / num_planned_days, 1),
+                            'Sodium': round(total_sodium / num_planned_days),
                             'Meals': 'Average per day'
                         })
                     
