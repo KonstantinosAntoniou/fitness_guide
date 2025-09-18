@@ -71,7 +71,7 @@ def export_meals_to_excel(path: str = 'meals_log.xlsx'):
     df.to_excel(path, index=False)
 
 
-def generate_weekly_pdf_report(user, weekly_data, chart_figures=None):
+def generate_weekly_pdf_report(user, weekly_data, chart_figures=None, notes=None):
     """Generate a comprehensive PDF report for weekly meal plan"""
     try:
         from reportlab.lib.pagesizes import letter, A4
@@ -187,9 +187,75 @@ def generate_weekly_pdf_report(user, weekly_data, chart_figures=None):
             if item['Day'] not in ['**WEEKLY TOTAL**', '**DAILY AVERAGE**'] and item['Calories'] > 0:
                 story.append(Paragraph(f"<b>{item['Day']} ({item['Date']})</b>", styles['Heading3']))
                 
-                # Clean up meals text for PDF and handle HTML spaces
+                # For PDF, we'll use a simpler approach: clean the HTML and add macro info where possible
                 meals_text = item['Meals'].replace('<br>', '\n').replace('&lt;', '<').replace('&gt;', '>')
-                # HTML spaces are already in the correct format for PDF
+                
+                # Clean HTML spaces and add macro information to main items
+                meals_lines = meals_text.split('\n')
+                meals_with_macros = []
+                
+                with get_db() as db:
+                    for line in meals_lines:
+                        if line.strip():
+                            # Clean tabs for processing (but keep original for display)
+                            clean_line = line.replace('\t', '    ')
+                            
+                            # Check if this is a main item (starts with •) vs ingredient (starts with spaces/-)
+                            if clean_line.strip().startswith('•'):
+                                # This is a main item - try to add macro info
+                                item_text = clean_line.strip()[1:].strip()  # Remove bullet point
+                                
+                                if ':' in item_text and not item_text.startswith('Custom'):
+                                    # This is a regular meal
+                                    meal_name = item_text.split(':')[0].strip()
+                                    try:
+                                        macros = calculate_item_macros("meal", meal_name, 1.0, db)
+                                        macro_text = f" - ({round(macros['calories'])}cal, {round(macros['protein'], 1)}g protein, {round(macros['carbs'], 1)}g carbs, {round(macros['fat_regular'], 1)}g fat, {round(macros['sodium'])}mg sodium)"
+                                        meals_with_macros.append(f"• {meal_name}{macro_text}:")
+                                    except:
+                                        meals_with_macros.append(clean_line)
+                                elif 'Custom' in item_text and ':' in item_text:
+                                    # Custom meal - harder to calculate, just keep as is for now
+                                    meals_with_macros.append(clean_line)
+                                else:
+                                    # This might be a food item
+                                    try:
+                                        # Try to extract food name from format like "200g Chicken Breast (Grilled)"
+                                        import re
+                                        # Match pattern: amount + unit + food name + optional (label)
+                                        match = re.match(r'^(\d+(?:\.\d+)?)\s*(\w*)\s+(.+?)(?:\s+\(([^)]+)\))?$', item_text)
+                                        if match:
+                                            amount_str, unit, food_name, label = match.groups()
+                                            amount = float(amount_str)
+                                            
+                                            # Find the food in database
+                                            if label:
+                                                food_obj = db.query(FoodModel).filter(FoodModel.name == food_name, FoodModel.label == label).first()
+                                            else:
+                                                food_obj = db.query(FoodModel).filter(FoodModel.name == food_name).first()
+                                            
+                                            if food_obj:
+                                                # Calculate multiplier based on measurement
+                                                base_match = re.match(r'^(\d+(?:\.\d+)?)', food_obj.measurement)
+                                                if base_match:
+                                                    base_amount = float(base_match.group(1))
+                                                    multiplier = amount / base_amount
+                                                    macros = calculate_item_macros("food", food_name, multiplier, db)
+                                                    macro_text = f" - ({round(macros['calories'])}cal, {round(macros['protein'], 1)}g protein, {round(macros['carbs'], 1)}g carbs, {round(macros['fat_regular'], 1)}g fat, {round(macros['sodium'])}mg sodium)"
+                                                    meals_with_macros.append(f"• {item_text}{macro_text}")
+                                                else:
+                                                    meals_with_macros.append(clean_line)
+                                            else:
+                                                meals_with_macros.append(clean_line)
+                                        else:
+                                            meals_with_macros.append(clean_line)
+                                    except:
+                                        meals_with_macros.append(clean_line)
+                            else:
+                                # This is an ingredient line, keep as is but clean up spacing
+                                meals_with_macros.append(clean_line.replace('    -', '    •'))
+                
+                meals_text = '\n'.join(meals_with_macros)
                 meals_para = Paragraph(meals_text.replace('\n', '<br/>'), styles['Normal'])
                 story.append(meals_para)
                 story.append(Spacer(1, 10))
@@ -228,6 +294,18 @@ def generate_weekly_pdf_report(user, weekly_data, chart_figures=None):
                         story.append(Paragraph(f"<i>Chart {i+1} could not be included</i>", styles['Normal']))
                         story.append(Spacer(1, 10))
         
+        # Add notes section if provided
+        if notes and notes.strip():
+            story.append(Spacer(1, 20))
+            story.append(Paragraph("<b>Weekly Plan Notes</b>", styles['Heading2']))
+            story.append(Spacer(1, 10))
+            
+            # Format notes with proper line breaks
+            notes_formatted = notes.replace('\n', '<br/>')
+            notes_para = Paragraph(notes_formatted, styles['Normal'])
+            story.append(notes_para)
+            story.append(Spacer(1, 10))
+        
         # Build PDF
         doc.build(story)
         buffer.seek(0)
@@ -258,10 +336,65 @@ def generate_weekly_pdf_report(user, weekly_data, chart_figures=None):
         return None
 
 
-def format_detailed_plan_item(item_type: str, item_name: str, multiplier: float, db_session) -> str:
+def calculate_item_macros(item_type: str, item_name: str, multiplier: float, db_session) -> dict:
+    """Calculate macros for a single food or meal item with given multiplier"""
+    macros = {'calories': 0, 'protein': 0, 'carbs': 0, 'fat_regular': 0, 'fat_saturated': 0, 'sodium': 0}
+    
+    if item_type == "food":
+        food = db_session.query(FoodModel).filter(FoodModel.name == item_name).first()
+        if food:
+            macros['calories'] = food.calories * multiplier
+            macros['protein'] = food.protein * multiplier  
+            macros['carbs'] = food.carbs * multiplier
+            macros['fat_regular'] = food.fat_regular * multiplier
+            macros['fat_saturated'] = food.fat_saturated * multiplier
+            macros['sodium'] = food.sodium * multiplier
+    
+    elif item_type == "meal":
+        meal = db_session.query(MealModel).filter(MealModel.name == item_name).first()
+        if meal:
+            for mf in meal.meal_food_items:
+                food = mf.food
+                total_mult = mf.multiplier * multiplier
+                macros['calories'] += food.calories * total_mult
+                macros['protein'] += food.protein * total_mult
+                macros['carbs'] += food.carbs * total_mult
+                macros['fat_regular'] += food.fat_regular * total_mult
+                macros['fat_saturated'] += food.fat_saturated * total_mult
+                macros['sodium'] += food.sodium * total_mult
+    
+    elif item_type == "customized_meal":
+        # Parse customized meal format: "meal_name{food1:mult1,food2:mult2,...}"
+        if '{' in item_name and '}' in item_name:
+            base_name = item_name.split('{')[0]
+            customizations_str = item_name.split('{')[1].rstrip('}')
+            
+            meal = db_session.query(MealModel).filter(MealModel.name == base_name).first()
+            if meal:
+                customizations = {}
+                for custom in customizations_str.split(','):
+                    if ':' in custom:
+                        food_name, custom_mult = custom.split(':')
+                        customizations[food_name.strip()] = float(custom_mult)
+                
+                for mf in meal.meal_food_items:
+                    food = mf.food
+                    custom_mult = customizations.get(food.name, mf.multiplier)
+                    total_mult = custom_mult * multiplier
+                    macros['calories'] += food.calories * total_mult
+                    macros['protein'] += food.protein * total_mult
+                    macros['carbs'] += food.carbs * total_mult
+                    macros['fat_regular'] += food.fat_regular * total_mult
+                    macros['fat_saturated'] += food.fat_saturated * total_mult
+                    macros['sodium'] += food.sodium * total_mult
+    
+    return macros
+
+
+def format_detailed_plan_item(item_type: str, item_name: str, multiplier: float, db_session, include_macros: bool = False) -> str:
     """
     Format a plan item with detailed food information using dots and calculated measurements.
-    For foods: returns "• 200g Chicken Breast (Grilled)"
+    For foods: returns "• 200g Chicken Breast (Grilled)" or with macros "• 200g Chicken Breast (Grilled): (250cal, 25g protein, 0g carbs, 15g fat, 80mg sodium)"
     For meals: expands to show individual foods within the meal with calculated amounts
     """
     
@@ -325,9 +458,16 @@ def format_detailed_plan_item(item_type: str, item_name: str, multiplier: float,
             calculated_measurement = parse_measurement_and_calculate(food.measurement, multiplier)
             # Hide label if it's just "-"
             if food.label == "-":
-                return f"• {calculated_measurement} {food.name}"
+                base_text = f"• {calculated_measurement} {food.name}"
             else:
-                return f"• {calculated_measurement} {food.name} ({food.label})"
+                base_text = f"• {calculated_measurement} {food.name} ({food.label})"
+            
+            if include_macros:
+                macros = calculate_item_macros(item_type, item_name, multiplier, db_session)
+                macro_text = f": ({round(macros['calories'])}cal, {round(macros['protein'], 1)}g protein, {round(macros['carbs'], 1)}g carbs, {round(macros['fat_regular'], 1)}g fat, {round(macros['sodium'])}mg sodium)"
+                return base_text + macro_text
+            else:
+                return base_text
         return f"• {multiplier}x {item_name}"
     
     elif item_type == "meal":
@@ -348,13 +488,20 @@ def format_detailed_plan_item(item_type: str, item_name: str, multiplier: float,
                 calculated_measurement = parse_measurement_and_calculate(food.measurement, total_mult)
                 # Hide label if it's just "-" and use HTML spaces for indentation
                 if food.label == "-":
-                    meal_foods.append(f"&nbsp;&nbsp;&nbsp;&nbsp;- {calculated_measurement} {food.name}")
+                    meal_foods.append(f"\t- {calculated_measurement} {food.name}")
                 else:
-                    meal_foods.append(f"&nbsp;&nbsp;&nbsp;&nbsp;- {calculated_measurement} {food.name} ({food.label})")
+                    meal_foods.append(f"\t- {calculated_measurement} {food.name} ({food.label})")
             
             # Format as: • meal_name\n\t- ingredients
             ingredients_str = "\n".join(meal_foods)
-            return f"• {item_name}:\n{ingredients_str}"
+            base_text = f"• {item_name}"
+            
+            if include_macros:
+                macros = calculate_item_macros(item_type, item_name, multiplier, db_session)
+                macro_text = f": ({round(macros['calories'])}cal, {round(macros['protein'], 1)}g protein, {round(macros['carbs'], 1)}g carbs, {round(macros['fat_regular'], 1)}g fat, {round(macros['sodium'])}mg sodium)"
+                return f"{base_text}{macro_text}:\n{ingredients_str}"
+            else:
+                return f"{base_text}:\n{ingredients_str}"
         return f"• {item_name} (meal)"
     
     elif item_type == "customized_meal":
@@ -371,9 +518,9 @@ def format_detailed_plan_item(item_type: str, item_name: str, multiplier: float,
                 calculated_measurement = parse_measurement_and_calculate(food.measurement, mult)
                 # Hide label if it's just "-" and use HTML spaces for indentation
                 if food.label == "-":
-                    meal_foods.append(f"&nbsp;&nbsp;&nbsp;&nbsp;- {calculated_measurement} {food.name}")
+                    meal_foods.append(f"\t- {calculated_measurement} {food.name}")
                 else:
-                    meal_foods.append(f"&nbsp;&nbsp;&nbsp;&nbsp;- {calculated_measurement} {food.name} ({food.label})")
+                    meal_foods.append(f"\t- {calculated_measurement} {food.name} ({food.label})")
             else:
                 # Fallback case - hide label if it's "-"
                 if food_label == "-":
@@ -383,7 +530,14 @@ def format_detailed_plan_item(item_type: str, item_name: str, multiplier: float,
         
         # Format as: • Custom meal_name:\n\t- ingredients
         ingredients_str = "\n".join(meal_foods)
-        return f"• Custom {item_name}:\n{ingredients_str}"
+        base_text = f"• Custom {item_name}"
+        
+        if include_macros:
+            macros = calculate_item_macros(item_type, item_name, 1.0, db_session)  # multiplier is embedded in ingredient_data
+            macro_text = f": ({round(macros['calories'])}cal, {round(macros['protein'], 1)}g protein, {round(macros['carbs'], 1)}g carbs, {round(macros['fat_regular'], 1)}g fat, {round(macros['sodium'])}mg sodium)"
+            return f"{base_text}{macro_text}:\n{ingredients_str}"
+        else:
+            return f"{base_text}:\n{ingredients_str}"
     
     return f"• {multiplier}x {item_name}"
 
@@ -628,6 +782,24 @@ def main():
             factor  = activity_levels[activity]
             tdee_hb = bmr_hb * factor
             tdee_ms = bmr_ms * factor
+            
+            # Calculate target calories if goal information is provided
+            if goal and weight_change and period and weight_change > 0:
+                days_map = {"Per week": 7, "Per month": 30, "Per year": 365}
+                days = days_map[period]
+                cal_adjust = (weight_change * 7700) / days
+                
+                if goal == "Lose weight":
+                    target_hb = tdee_hb - cal_adjust
+                    target_ms = tdee_ms - cal_adjust
+                else:
+                    target_hb = tdee_hb + cal_adjust
+                    target_ms = tdee_ms + cal_adjust
+                
+                avg_target = (target_hb + target_ms) / 2
+            else:
+                avg_target = None
+            
             if not name.strip():
                 st.error("Name cannot be empty.")
             else:
@@ -1379,12 +1551,12 @@ def main():
                     date=date.today(),
                     user_id=user.id if user else None,
                     meals=plan_str,
-                    calories=totals['Calories'],
-                    protein=totals['Protein'],
-                    carbs=totals['Carbs'],
-                    fat_regular=totals['Fat_Regular'],
-                    fat_saturated=totals['Fat_Saturated'],
-                    sodium=totals['Sodium']
+                    calories=float(totals['Calories']),
+                    protein=float(totals['Protein']),
+                    carbs=float(totals['Carbs']),
+                    fat_regular=float(totals['Fat_Regular']),
+                    fat_saturated=float(totals['Fat_Saturated']),
+                    sodium=float(totals['Sodium'])
                 )
                 db.add(new_plan)
                 db.commit()
@@ -1452,7 +1624,9 @@ def main():
                                 
                                 # Show preview of selected plan
                                 st.info(f"**Preview:** {selected_plan.date} - {selected_plan.calories:.0f} cal")
-                                st.text_area("Meals:", selected_plan.meals, height=100, disabled=True, key=f"preview_unassigned_{selected_plan.id}")
+                                # Convert tabs to spaces for better text area display
+                                preview_text = selected_plan.meals.replace('\t', '    ')
+                                st.text_area("Meals:", preview_text, height=100, disabled=True, key=f"preview_unassigned_{selected_plan.id}")
                                 
                                 col1, col2 = st.columns([1, 3])
                                 with col1:
@@ -1541,7 +1715,7 @@ def main():
                         # Show the plans table
                         df_plans = pd.DataFrame([{
                             'Date': p.date,
-                            'Meals': p.meals.replace('\n', '<br>').replace('&nbsp;', ' '),
+                            'Meals': p.meals.replace('\n', '<br>').replace('\t', '&nbsp;&nbsp;&nbsp;&nbsp;'),
                             'Calories': round(p.calories),
                             'Protein': round(p.protein, 1),
                             'Carbs': round(p.carbs, 1),
@@ -1566,7 +1740,9 @@ def main():
                             
                             # Show preview of selected plan
                             st.info(f"**Preview:** {selected_plan.date} - {selected_plan.calories:.0f} cal")
-                            st.text_area("Meals:", selected_plan.meals, height=100, disabled=True)
+                            # Convert tabs to spaces for better text area display
+                            preview_text = selected_plan.meals.replace('\t', '    ')
+                            st.text_area("Meals:", preview_text, height=100, disabled=True)
                             
                             col1, col2 = st.columns([1, 3])
                             with col1:
@@ -1583,11 +1759,369 @@ def main():
                                         st.error(f"Error deleting plan: {e}")
                         
                         st.markdown("---")
+                        
+                        # Add edit functionality
+                        st.subheader(f"Edit Plans for {selected_user}")
+                        
+                        edit_plan_options = [f"{p.date} - {p.calories:.0f} cal - {p.protein:.0f}g protein" for p in plans]
+                        selected_edit_plan_display = st.selectbox("Select plan to edit:", ["-- Select Plan --"] + edit_plan_options, key="edit_plan_selector")
+                        
+                        if selected_edit_plan_display != "-- Select Plan --":
+                            edit_plan_index = edit_plan_options.index(selected_edit_plan_display)
+                            selected_edit_plan = plans[edit_plan_index]
+                            
+                            st.info(f"**Editing:** {selected_edit_plan.date} - {selected_edit_plan.calories:.0f} cal")
+                            
+                            # Parse existing plan items from the meals string
+                            current_meals_text = selected_edit_plan.meals
+                            
+                            # Debug: Show the raw meal text
+                            if st.checkbox("🔍 Debug: Show raw meal text", key=f"debug_raw_{selected_edit_plan.id}"):
+                                st.code(current_meals_text)
+                                st.write("**Lines breakdown:**")
+                                for i, line in enumerate(current_meals_text.split('\n')):
+                                    st.write(f"Line {i}: `{repr(line)}`")
+                                
+                                # Show plan details
+                                st.write("**Plan Details:**")
+                                st.write(f"- Date: {selected_edit_plan.date}")
+                                st.write(f"- User: {selected_edit_plan.user.name if selected_edit_plan.user else 'No User'}")
+                                st.write(f"- Stored Calories: {selected_edit_plan.calories}")
+                                st.write(f"- Stored Protein: {selected_edit_plan.protein}")
+                                
+                                # Show available foods and meals for reference
+                                st.write("**Available Foods (first 10):**")
+                                if not df_foods.empty:
+                                    st.dataframe(df_foods.head(10)[['Name', 'Label', 'Calories', 'Protein']])
+                                
+                                st.write("**Available Meals:**")
+                                if not df_meals.empty:
+                                    st.dataframe(df_meals[['Meal Name', 'Calories', 'Protein']])
+                            
+                            # Create editing interface similar to daily planner
+                            df_foods = load_logged_foods()
+                            df_meals = load_logged_meals()
+                            
+                            # Initialize session state for edit mode
+                            if f"edit_plan_{selected_edit_plan.id}" not in st.session_state:
+                                st.session_state[f"edit_plan_{selected_edit_plan.id}"] = {
+                                    'items': [],
+                                    'initialized': False
+                                }
+                            
+                            edit_state = st.session_state[f"edit_plan_{selected_edit_plan.id}"]
+                            
+                            # Initialize with current plan items if not done yet
+                            if not edit_state['initialized']:
+                                # Parse current meals to extract items - improved parsing logic
+                                parsed_items = []
+                                import re
+                                
+                                for line in current_meals_text.split('\n'):
+                                    line = line.strip()
+                                    
+                                    # Skip empty lines and ingredient lines (start with tabs or spaces)
+                                    if not line or line.startswith('\t') or line.startswith('    '):
+                                        continue
+                                    
+                                    # Remove bullet point if present
+                                    clean_line = line
+                                    if clean_line.startswith('•'):
+                                        clean_line = clean_line[1:].strip()
+                                    
+                                    # Skip if still empty
+                                    if not clean_line:
+                                        continue
+                                    
+                                    # Check if this is a meal (contains ':' and might have macro info)
+                                    if ':' in clean_line:
+                                        # Extract meal name (everything before the first ':')
+                                        meal_name = clean_line.split(':')[0].strip()
+                                        
+                                        # Remove "Custom" prefix if present
+                                        if meal_name.startswith('Custom '):
+                                            meal_name = meal_name[7:].strip()
+                                        
+                                        # Check if this meal exists in database
+                                        if not df_meals.empty and meal_name in df_meals['Meal Name'].values:
+                                            parsed_items.append(('meal', meal_name, 1.0))
+                                            continue
+                                    
+                                    # Try to parse as a food item
+                                    # Handle format like "200g Chicken Breast (Grilled)" or with macro info
+                                    
+                                    # First, remove any macro information in parentheses at the end
+                                    # Pattern: ": (123cal, 12.3g protein, ...)" or " - (123cal, 12.3g protein, ...)"
+                                    macro_pattern = r'[\s\-:]*\([^)]*cal[^)]*\)$'
+                                    clean_line = re.sub(macro_pattern, '', clean_line)
+                                    
+                                    # Now try to parse the food with multiple patterns
+                                    food_parsed = False
+                                    
+                                    # Pattern 1: amount + unit + food name + optional (label)
+                                    food_match = re.match(r'^(\d+(?:\.\d+)?)\s*(\w*)\s+(.+?)(?:\s+\(([^)]+)\))?$', clean_line)
+                                    if food_match:
+                                        amount_str, unit, food_name, label = food_match.groups()
+                                        
+                                        try:
+                                            # Find the food in database to calculate multiplier
+                                            if not df_foods.empty:
+                                                if label:
+                                                    food_matches = df_foods[(df_foods['Name'] == food_name) & (df_foods['Label'] == label)]
+                                                else:
+                                                    food_matches = df_foods[df_foods['Name'] == food_name]
+                                                
+                                                if not food_matches.empty:
+                                                    food_measurement = food_matches.iloc[0]['Measurement']
+                                                    base_match = re.match(r'^(\d+(?:\.\d+)?)', food_measurement)
+                                                    if base_match:
+                                                        base_amount = float(base_match.group(1))
+                                                        amount = float(amount_str)
+                                                        multiplier = amount / base_amount
+                                                        parsed_items.append(('food', food_name, multiplier))
+                                                        food_parsed = True
+                                        except Exception as e:
+                                            if st.session_state.get(f"debug_raw_{selected_edit_plan.id}", False):
+                                                st.warning(f"Error parsing food '{clean_line}': {e}")
+                                    
+                                    # Pattern 2: Try without unit (like "1medium Apple" or "1 Apple")
+                                    if not food_parsed:
+                                        simple_match = re.match(r'^(\d+(?:\.\d+)?)\s*(.+?)(?:\s+\(([^)]+)\))?$', clean_line)
+                                        if simple_match:
+                                            amount_str, food_name_part, label = simple_match.groups()
+                                            
+                                            # Handle cases like "1medium" -> amount=1, food_name starts with "medium"
+                                            if re.match(r'^\d+[a-zA-Z]', amount_str):
+                                                # Extract numeric part
+                                                numeric_match = re.match(r'^(\d+(?:\.\d+)?)([a-zA-Z].*)$', amount_str)
+                                                if numeric_match:
+                                                    amount_str, extra_part = numeric_match.groups()
+                                                    food_name_part = extra_part + ' ' + food_name_part
+                                            
+                                            try:
+                                                if not df_foods.empty:
+                                                    if label:
+                                                        food_matches = df_foods[(df_foods['Name'] == food_name_part.strip()) & (df_foods['Label'] == label)]
+                                                    else:
+                                                        food_matches = df_foods[df_foods['Name'] == food_name_part.strip()]
+                                                    
+                                                    if not food_matches.empty:
+                                                        # For simple cases, assume multiplier equals the amount
+                                                        multiplier = float(amount_str)
+                                                        parsed_items.append(('food', food_name_part.strip(), multiplier))
+                                                        food_parsed = True
+                                            except Exception as e:
+                                                if st.session_state.get(f"debug_raw_{selected_edit_plan.id}", False):
+                                                    st.warning(f"Error parsing simple food '{clean_line}': {e}")
+                                    
+                                    if not food_parsed and st.session_state.get(f"debug_raw_{selected_edit_plan.id}", False):
+                                        st.warning(f"Could not parse line: `{clean_line}`")
+                                
+                                edit_state['items'] = parsed_items
+                                edit_state['initialized'] = True
+                                
+                                # Debug: Show parsed items
+                                if st.session_state.get(f"debug_raw_{selected_edit_plan.id}", False):
+                                    st.write("**Parsed items:**")
+                                    for item_type, item_name, multiplier in parsed_items:
+                                        st.write(f"- {item_type}: {item_name} (x{multiplier})")
+                            
+                            st.write("**Current Plan Items:**")
+                            
+                            # Display and allow editing of current items
+                            updated_items = []
+                            items_to_remove = []
+                            
+                            for i, (item_type, item_name, multiplier) in enumerate(edit_state['items']):
+                                col1, col2, col3, col4 = st.columns([2, 2, 1, 1])
+                                
+                                with col1:
+                                    st.write(f"{item_type.title()}: {item_name}")
+                                
+                                with col2:
+                                    if item_type == 'food':
+                                        # Find food measurement for reference
+                                        food_matches = df_foods[df_foods['Name'] == item_name]
+                                        if not food_matches.empty:
+                                            base_measurement = food_matches.iloc[0]['Measurement']
+                                            st.write(f"Base: {base_measurement}")
+                                    else:
+                                        st.write("Meal")
+                                
+                                with col3:
+                                    new_multiplier = st.number_input(
+                                        f"Multiplier",
+                                        value=float(multiplier),
+                                        min_value=0.1,
+                                        step=0.1,
+                                        key=f"edit_mult_{selected_edit_plan.id}_{i}",
+                                        label_visibility="collapsed"
+                                    )
+                                    updated_items.append((item_type, item_name, new_multiplier))
+                                
+                                with col4:
+                                    if st.button("🗑️", key=f"remove_item_{selected_edit_plan.id}_{i}"):
+                                        items_to_remove.append(i)
+                            
+                            # Remove items marked for removal
+                            for idx in reversed(items_to_remove):
+                                edit_state['items'].pop(idx)
+                                st.rerun()
+                            
+                            # Update items with new multipliers
+                            edit_state['items'] = updated_items
+                            
+                            st.markdown("---")
+                            st.write("**Add New Items:**")
+                            
+                            # Add new items interface
+                            col1, col2 = st.columns(2)
+                            
+                            with col1:
+                                add_type = st.selectbox("Add:", ["Food", "Meal"], key=f"add_type_{selected_edit_plan.id}")
+                            
+                            with col2:
+                                if add_type == "Food":
+                                    if not df_foods.empty:
+                                        food_options = [f"{row['Name']} ({row['Label']})" for _, row in df_foods.iterrows()]
+                                        selected_food = st.selectbox("Select Food:", ["-- Select --"] + food_options, key=f"add_food_{selected_edit_plan.id}")
+                                        
+                                        if selected_food != "-- Select --":
+                                            food_name = selected_food.split(' (')[0]
+                                            food_label = selected_food.split(' (', 1)[1][:-1]
+                                            
+                                            multiplier = st.number_input("Multiplier:", min_value=0.1, value=1.0, step=0.1, key=f"add_food_mult_{selected_edit_plan.id}")
+                                            
+                                            if st.button("Add Food", key=f"add_food_btn_{selected_edit_plan.id}"):
+                                                edit_state['items'].append(('food', food_name, multiplier))
+                                                st.rerun()
+                                else:
+                                    if not df_meals.empty:
+                                        meal_options = df_meals['Meal Name'].tolist()
+                                        selected_meal = st.selectbox("Select Meal:", ["-- Select --"] + meal_options, key=f"add_meal_{selected_edit_plan.id}")
+                                        
+                                        if selected_meal != "-- Select --":
+                                            multiplier = st.number_input("Multiplier:", min_value=0.1, value=1.0, step=0.1, key=f"add_meal_mult_{selected_edit_plan.id}")
+                                            
+                                            if st.button("Add Meal", key=f"add_meal_btn_{selected_edit_plan.id}"):
+                                                edit_state['items'].append(('meal', selected_meal, multiplier))
+                                                st.rerun()
+                            
+                            # Calculate new totals
+                            new_totals = dict.fromkeys(['Calories','Protein','Carbs','Fat_Regular','Fat_Saturated','Sodium'], 0.0)
+                            
+                            for item_type, item_name, multiplier in edit_state['items']:
+                                if item_type == 'food':
+                                    food_matches = df_foods[df_foods['Name'] == item_name]
+                                    if not food_matches.empty:
+                                        food_row = food_matches.iloc[0]
+                                        new_totals['Calories'] += float(food_row['Calories'] * multiplier)
+                                        new_totals['Protein'] += float(food_row['Protein'] * multiplier)
+                                        new_totals['Carbs'] += float(food_row['Carbs'] * multiplier)
+                                        new_totals['Fat_Regular'] += float(food_row['Fat_Regular'] * multiplier)
+                                        new_totals['Fat_Saturated'] += float(food_row['Fat_Saturated'] * multiplier)
+                                        new_totals['Sodium'] += float(food_row['Sodium'] * multiplier)
+                                elif item_type == 'meal':
+                                    meal_matches = df_meals[df_meals['Meal Name'] == item_name]
+                                    if not meal_matches.empty:
+                                        meal_row = meal_matches.iloc[0]
+                                        new_totals['Calories'] += float(meal_row['Calories'] * multiplier)
+                                        new_totals['Protein'] += float(meal_row['Protein'] * multiplier)
+                                        new_totals['Carbs'] += float(meal_row['Carbs'] * multiplier)
+                                        new_totals['Fat_Regular'] += float(meal_row['Fat_Regular'] * multiplier)
+                                        new_totals['Fat_Saturated'] += float(meal_row['Fat_Saturated'] * multiplier)
+                                        new_totals['Sodium'] += float(meal_row['Sodium'] * multiplier)
+                            
+                            # Display updated totals
+                            st.markdown("---")
+                            st.write("**Updated Plan Totals:**")
+                            col1, col2, col3, col4, col5, col6 = st.columns(6)
+                            with col1:
+                                st.metric("Calories", f"{new_totals['Calories']:.0f}")
+                            with col2:
+                                st.metric("Protein", f"{new_totals['Protein']:.1f}g")
+                            with col3:
+                                st.metric("Carbs", f"{new_totals['Carbs']:.1f}g")
+                            with col4:
+                                st.metric("Fat", f"{new_totals['Fat_Regular']:.1f}g")
+                            with col5:
+                                st.metric("Sat Fat", f"{new_totals['Fat_Saturated']:.1f}g")
+                            with col6:
+                                st.metric("Sodium", f"{new_totals['Sodium']:.0f}mg")
+                            
+                            # Debug: Compare with stored totals
+                            if st.session_state.get(f"debug_raw_{selected_edit_plan.id}", False):
+                                st.write("**Comparison with stored totals:**")
+                                stored_totals = {
+                                    'Calories': selected_edit_plan.calories,
+                                    'Protein': selected_edit_plan.protein,
+                                    'Carbs': selected_edit_plan.carbs,
+                                    'Fat_Regular': selected_edit_plan.fat_regular,
+                                    'Fat_Saturated': selected_edit_plan.fat_saturated,
+                                    'Sodium': selected_edit_plan.sodium
+                                }
+                                
+                                comparison_data = []
+                                for key in ['Calories', 'Protein', 'Carbs', 'Fat_Regular', 'Fat_Saturated', 'Sodium']:
+                                    calculated = new_totals[key]
+                                    stored = stored_totals[key]
+                                    difference = calculated - stored
+                                    comparison_data.append({
+                                        'Macro': key,
+                                        'Calculated': f"{calculated:.1f}",
+                                        'Stored': f"{stored:.1f}",
+                                        'Difference': f"{difference:.1f}",
+                                        'Match': '✅' if abs(difference) < 0.1 else '❌'
+                                    })
+                                
+                                st.dataframe(pd.DataFrame(comparison_data), use_container_width=True)
+                            
+                            # Save changes button
+                            col1, col2 = st.columns([1, 3])
+                            with col1:
+                                if st.button("💾 Save Changes", type="primary", key=f"save_changes_{selected_edit_plan.id}"):
+                                    try:
+                                        # Format the updated plan items
+                                        with get_db() as db:
+                                            formatted_items = []
+                                            for item_type, item_name, multiplier in edit_state['items']:
+                                                formatted_item = format_detailed_plan_item(item_type, item_name, multiplier, db)
+                                                formatted_items.append(formatted_item)
+                                            
+                                            new_plan_str = "\n".join(formatted_items)
+                                            
+                                            # Update the plan in database
+                                            plan_to_update = db.query(DailyPlan).filter(DailyPlan.id == selected_edit_plan.id).first()
+                                            if plan_to_update:
+                                                plan_to_update.meals = new_plan_str
+                                                plan_to_update.calories = float(new_totals['Calories'])
+                                                plan_to_update.protein = float(new_totals['Protein'])
+                                                plan_to_update.carbs = float(new_totals['Carbs'])
+                                                plan_to_update.fat_regular = float(new_totals['Fat_Regular'])
+                                                plan_to_update.fat_saturated = float(new_totals['Fat_Saturated'])
+                                                plan_to_update.sodium = float(new_totals['Sodium'])
+                                                db.commit()
+                                        
+                                        # Clear the edit state
+                                        del st.session_state[f"edit_plan_{selected_edit_plan.id}"]
+                                        
+                                        st.success(f"Plan for {selected_edit_plan.date} updated successfully!")
+                                        st.rerun()
+                                    except Exception as e:
+                                        st.error(f"Error updating plan: {e}")
+                            
+                            with col2:
+                                if st.button("❌ Cancel", key=f"cancel_edit_{selected_edit_plan.id}"):
+                                    # Clear the edit state
+                                    del st.session_state[f"edit_plan_{selected_edit_plan.id}"]
+                                    st.rerun()
+                        
+                        st.markdown("---")
                     
                     # Show all plans table
                     df_plans = pd.DataFrame([{
                         'Date': p.date,
-                        'Meals': p.meals.replace('\n', '<br>').replace('&nbsp;', ' '),
+                            'Meals': p.meals.replace('\n', '<br>').replace('\t', '&nbsp;&nbsp;&nbsp;&nbsp;'),
                         'Calories': round(p.calories),
                         'Protein': round(p.protein, 1),
                         'Carbs': round(p.carbs, 1),
@@ -1651,7 +2185,7 @@ def main():
                     for item in meal_items:
                         if item.strip():
                             # Clean up HTML entities and bullet points
-                            clean_item = item.replace('&nbsp;', ' ').replace('•', '').strip()
+                            clean_item = item.replace('\t', '    ').replace('•', '').strip()
                             
                             # Skip ingredient lines (those that start with spaces or dashes)
                             if clean_item.startswith('- '):
@@ -1732,7 +2266,7 @@ def main():
                                 'Fat_Regular': round(plan.fat_regular, 1),
                                 'Fat_Saturated': round(plan.fat_saturated, 1),
                                 'Sodium': round(plan.sodium),
-                                'Meals': plan.meals.replace('\n', '<br>').replace('&nbsp;', ' ')
+                                'Meals': plan.meals.replace('\n', '<br>').replace('\t', '&nbsp;&nbsp;&nbsp;&nbsp;')
                             })
                             total_calories += plan.calories
                             total_protein += plan.protein
@@ -1829,6 +2363,27 @@ def main():
                             # Store figures for PDF export
                             chart_figures = [fig1, fig2, fig3]
                         
+                        # Notes section
+                        st.markdown("---")
+                        st.subheader("📝 Weekly Plan Notes")
+                        st.write("Add notes about supplements, food substitutions, or other important information:")
+                        
+                        # Initialize session state for notes if not exists
+                        notes_key = f"weekly_notes_{selected_user.name}"
+                        if notes_key not in st.session_state:
+                            st.session_state[notes_key] = ""
+                        
+                        weekly_notes = st.text_area(
+                            "Notes:",
+                            value=st.session_state[notes_key],
+                            height=100,
+                            placeholder="Example:\n• Take Vitamin D3 supplement with breakfast\n• Replace chicken with fish on Tuesday if preferred\n• Add extra protein shake on workout days",
+                            key=f"notes_input_{selected_user.name}"
+                        )
+                        
+                        # Update session state
+                        st.session_state[notes_key] = weekly_notes
+                        
                         # Export buttons
                         col1, col2 = st.columns(2)
                         
@@ -1849,7 +2404,7 @@ def main():
                             if st.button("📄 Generate PDF Report"):
                                 with st.spinner("Generating PDF report..."):
                                     chart_figs = chart_figures if 'chart_figures' in locals() else None
-                                    pdf_buffer = generate_weekly_pdf_report(selected_user, weekly_data, chart_figs)
+                                    pdf_buffer = generate_weekly_pdf_report(selected_user, weekly_data, chart_figs, weekly_notes)
                                     
                                     if pdf_buffer:
                                         st.download_button(

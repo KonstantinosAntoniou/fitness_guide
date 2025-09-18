@@ -61,3 +61,6 @@ build/
 *.tmp
 *.swp
 *.bak
+
+# PDF files (generated reports)
+*.pdf
