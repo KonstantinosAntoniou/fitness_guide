@@ -73,6 +73,7 @@ def export_meals_to_excel(path: str = 'meals_log.xlsx'):
 
 def generate_weekly_pdf_report(user, weekly_data, chart_figures=None, notes=None):
     """Generate a comprehensive PDF report for weekly meal plan"""
+    print("DEBUG: PDF generation started")
     try:
         from reportlab.lib.pagesizes import letter, A4
         from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
@@ -195,28 +196,140 @@ def generate_weekly_pdf_report(user, weekly_data, chart_figures=None, notes=None
                 meals_with_macros = []
                 
                 with get_db() as db:
-                    for line in meals_lines:
-                        if line.strip():
-                            # Clean tabs for processing (but keep original for display)
-                            clean_line = line.replace('\t', '    ')
-                            
-                            # Check if this is a main item (starts with •) vs ingredient (starts with spaces/-)
-                            if clean_line.strip().startswith('•'):
-                                # This is a main item - try to add macro info
-                                item_text = clean_line.strip()[1:].strip()  # Remove bullet point
+                        for line in meals_lines:
+                            if line.strip():
+                                # Clean tabs for processing (but keep original for display)
+                                clean_line = line.replace('\t', '    ')
                                 
-                                if ':' in item_text and not item_text.startswith('Custom'):
-                                    # This is a regular meal
-                                    meal_name = item_text.split(':')[0].strip()
-                                    try:
-                                        macros = calculate_item_macros("meal", meal_name, 1.0, db)
-                                        macro_text = f" - ({round(macros['calories'])}cal, {round(macros['protein'], 1)}g protein, {round(macros['carbs'], 1)}g carbs, {round(macros['fat_regular'], 1)}g fat, {round(macros['sodium'])}mg sodium)"
-                                        meals_with_macros.append(f"• {meal_name}{macro_text}:")
-                                    except:
-                                        meals_with_macros.append(clean_line)
-                                elif 'Custom' in item_text and ':' in item_text:
-                                    # Custom meal - harder to calculate, just keep as is for now
-                                    meals_with_macros.append(clean_line)
+                                # Check if this is a main item (starts with •) vs ingredient (starts with spaces/-)
+                                if clean_line.strip().startswith('•'):
+                                    # This is a main item - try to add macro info
+                                    item_text = clean_line.strip()[1:].strip()  # Remove bullet point
+                                    
+                                    if ':' in item_text and not item_text.startswith('Custom'):
+                                        # This is a regular meal
+                                        meal_name = item_text.split(':')[0].strip()
+                                        try:
+                                            macros = calculate_item_macros("meal", meal_name, 1.0, db)
+                                            macro_text = f" - ({round(macros['calories'])}cal, {round(macros['protein'], 1)}g protein, {round(macros['carbs'], 1)}g carbs, {round(macros['fat_regular'], 1)}g fat, {round(macros['sodium'])}mg sodium)"
+                                            meals_with_macros.append(f"• {meal_name}{macro_text}:")
+                                        except:
+                                            meals_with_macros.append(clean_line)
+                                    elif 'Custom' in item_text and ':' in item_text:
+                                        print(f"DEBUG: Found Custom meal: {item_text}")
+                                        # Custom meal - need to parse ingredients and calculate macros
+                                        try:
+                                            # Extract custom meal name
+                                            custom_meal_name = item_text.replace('Custom ', '').split(':')[0].strip()
+                                            
+                                            # Find the full custom meal section in the original text to parse ingredients
+                                            full_meal_text = ""
+                                            found_custom = False
+                                            for full_line in meals_text.split('\n'):
+                                                if f'Custom {custom_meal_name}:' in full_line:
+                                                    found_custom = True
+                                                    full_meal_text = full_line
+                                                    continue
+                                                elif found_custom and full_line.startswith('\t-'):
+                                                    full_meal_text += '\n' + full_line
+                                                elif found_custom and not full_line.startswith('\t-'):
+                                                    break
+                                        
+                                            # Parse ingredients and calculate macros
+                                            total_macros = {'calories': 0, 'protein': 0, 'carbs': 0, 'fat_regular': 0, 'fat_saturated': 0, 'sodium': 0}
+                                            
+                                            import re
+                                            for ingredient_line in full_meal_text.split('\n')[1:]:  # Skip the header line
+                                                if ingredient_line.startswith('\t-'):
+                                                    # Parse ingredient line like "\t- 200g Chicken Breast (Grilled)"
+                                                    ingredient_text = ingredient_line.replace('\t- ', '').strip()
+                                                
+                                                    # Handle different measurement formats
+                                                    # Try different parsing patterns in specific order
+                                                    amount = None
+                                                    food_name = None
+                                                    label = None
+                                                
+                                                # Pattern 1: Scoop format like "1scoop (32g) Protein Powder (Dymatize iso 100)"
+                                                if 'scoop' in ingredient_text and '(' in ingredient_text:
+                                                    match1 = re.match(r'^(\d+(?:\.\d+)?)\s*scoop\s*\((\d+(?:\.\d+)?)g\)\s+(.+?)(?:\s+\(([^)]+)\))?$', ingredient_text)
+                                                    if match1:
+                                                        scoop_count, weight_str, food_name, label = match1.groups()
+                                                        amount = float(scoop_count)  # Use scoop count, not grams
+                                                
+                                                # Pattern 2: Tablespoon/teaspoon like "1tablespoon OliveOil" or "1tpsp Mustard"
+                                                elif 'tablespoon' in ingredient_text or 'tpsp' in ingredient_text:
+                                                    match2 = re.match(r'^(\d+(?:\.\d+)?)\s*(tablespoon|tpsp)\s+(.+?)(?:\s+\(([^)]+)\))?$', ingredient_text)
+                                                    if match2:
+                                                        count_str, unit, food_name, label = match2.groups()
+                                                        amount = float(count_str)
+                                                
+                                                # Pattern 3: Standard gram format like "200g Yogurt (Olympos)"
+                                                elif re.match(r'^(\d+(?:\.\d+)?)\s*g\s+(.+?)(?:\s+\(([^)]+)\))?$', ingredient_text):
+                                                    match3 = re.match(r'^(\d+(?:\.\d+)?)\s*g\s+(.+?)(?:\s+\(([^)]+)\))?$', ingredient_text)
+                                                    if match3:
+                                                        amount_str, food_name, label = match3.groups()
+                                                        amount = float(amount_str)
+                                                
+                                                # Pattern 4: Simple count like "0.5 Banana" or "2 Pita"
+                                                elif re.match(r'^(\d+(?:\.\d+)?)\s+(.+?)(?:\s+\(([^)]+)\))?$', ingredient_text):
+                                                    match4 = re.match(r'^(\d+(?:\.\d+)?)\s+(.+?)(?:\s+\(([^)]+)\))?$', ingredient_text)
+                                                    if match4:
+                                                        count_str, food_name, label = match4.groups()
+                                                        amount = float(count_str)
+                                                
+                                                if amount is not None and food_name:
+                                                    
+                                                    # Find the food in database
+                                                    if label and label != "-":
+                                                        food_obj = db.query(FoodModel).filter(FoodModel.name == food_name, FoodModel.label == label).first()
+                                                    else:
+                                                        food_obj = db.query(FoodModel).filter(FoodModel.name == food_name).first()
+                                                    
+                                                    if food_obj:
+                                                        # Calculate multiplier based on measurement and food type
+                                                        import re as regex_module
+                                                        base_match = regex_module.match(r'^(\d+(?:\.\d+)?)', food_obj.measurement)
+                                                        if base_match:
+                                                            base_amount = float(base_match.group(1))
+                                                            
+                                                            # Always use amount / base_amount for multiplier calculation
+                                                            # The amount is already in the correct units based on parsing
+                                                            multiplier_calc = amount / base_amount
+                                                            
+                                                            # Add to total macros
+                                                            calories_add = food_obj.calories * multiplier_calc
+                                                            protein_add = food_obj.protein * multiplier_calc
+                                                            
+                                                            total_macros['calories'] += calories_add
+                                                            total_macros['protein'] += protein_add
+                                                            total_macros['carbs'] += food_obj.carbs * multiplier_calc
+                                                            total_macros['fat_regular'] += food_obj.fat_regular * multiplier_calc
+                                                            total_macros['fat_saturated'] += food_obj.fat_saturated * multiplier_calc
+                                                            total_macros['sodium'] += food_obj.sodium * multiplier_calc
+                                                        else:
+                                                            # Could not parse measurement - skip this ingredient
+                                                            pass
+                                                    else:
+                                                        # Food not found in database - skip this ingredient  
+                                                        pass
+                                                else:
+                                                    # Could not parse ingredient text - skip this ingredient
+                                                    pass
+                                        
+                                            # Add macro info to the custom meal
+                                            macro_text = f" - ({round(total_macros['calories'])}cal, {round(total_macros['protein'], 1)}g protein, {round(total_macros['carbs'], 1)}g carbs, {round(total_macros['fat_regular'], 1)}g fat, {round(total_macros['sodium'])}mg sodium)"
+                                            meals_with_macros.append(f"• Custom {custom_meal_name}{macro_text}:")
+                                            
+                                        except Exception as e:
+                                            # If parsing fails, keep original line and show error
+                                            print(f"DEBUG: Exception in custom meal parsing: {e}")
+                                            try:
+                                                print(f"DEBUG: Custom meal name: {custom_meal_name}")
+                                                print(f"DEBUG: Full meal text: {repr(full_meal_text)}")
+                                            except:
+                                                pass
+                                            meals_with_macros.append(clean_line)
                                 else:
                                     # This might be a food item
                                     try:
