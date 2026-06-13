@@ -41,10 +41,11 @@ class USDAProvider:
         self.api_key = api_key or os.environ.get("USDA_API_KEY", "DEMO_KEY")
         self._client = client or httpx.Client(base_url=self.BASE, timeout=15.0)
 
-    def search(self, query: str, limit: int = 5) -> list[NutritionResult]:
+    def search(self, query: str, limit: int = 5,
+               data_types: tuple[str, ...] = ("Foundation", "SR Legacy")) -> list[NutritionResult]:
         resp = self._client.get("/fdc/v1/foods/search", params={
             "query": query, "pageSize": limit, "api_key": self.api_key,
-            "dataType": "Foundation,SR Legacy",
+            "dataType": ",".join(data_types),
         })
         resp.raise_for_status()
         foods = resp.json().get("foods", [])
