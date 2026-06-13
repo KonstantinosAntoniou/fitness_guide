@@ -1,3 +1,4 @@
+from datetime import date
 from typing import Optional
 from sqlalchemy import String, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -63,3 +64,46 @@ class MealItem(Base):
 
     meal: Mapped["Meal"] = relationship(back_populates="items")
     food: Mapped["Food"] = relationship(back_populates="meal_items")
+
+
+class Plan(Base):
+    __tablename__ = "plans"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), default=None)
+    name: Mapped[str] = mapped_column(String, default="Plan")
+    entries: Mapped[list["PlanEntry"]] = relationship(
+        back_populates="plan", cascade="all, delete-orphan", order_by="PlanEntry.position"
+    )
+
+
+class PlanEntry(Base):
+    __tablename__ = "plan_entries"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    plan_id: Mapped[int] = mapped_column(ForeignKey("plans.id"))
+    name: Mapped[str] = mapped_column(String, default="Meal")
+    position: Mapped[int] = mapped_column(default=0)
+    plan: Mapped["Plan"] = relationship(back_populates="entries")
+    items: Mapped[list["PlanItem"]] = relationship(
+        back_populates="entry", cascade="all, delete-orphan"
+    )
+
+
+class PlanItem(Base):
+    __tablename__ = "plan_items"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    entry_id: Mapped[int] = mapped_column(ForeignKey("plan_entries.id"))
+    food_id: Mapped[int] = mapped_column(ForeignKey("foods.id"))
+    servings: Mapped[float] = mapped_column(default=1.0)
+    entry: Mapped["PlanEntry"] = relationship(back_populates="items")
+    food: Mapped["Food"] = relationship()
+
+
+class LogEntry(Base):
+    __tablename__ = "log_entries"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    eaten_on: Mapped[date] = mapped_column(default=date.today)
+    food_id: Mapped[int] = mapped_column(ForeignKey("foods.id"))
+    servings: Mapped[float] = mapped_column(default=1.0)
+    source: Mapped[str] = mapped_column(String, default="manual")
+    food: Mapped["Food"] = relationship()
