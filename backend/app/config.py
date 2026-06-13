@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./fitness.db"
     # LLM: "google" (Gemini via LangChain) | "openai"
     llm_provider: str = "google"
+    llm_model: str = "gemini-2.5-flash"
 
 
 settings = Settings()
