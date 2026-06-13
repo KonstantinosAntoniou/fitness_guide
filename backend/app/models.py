@@ -36,6 +36,12 @@ class Food(Base):
     fat_unsaturated: Mapped[float] = mapped_column(default=0.0)
     fiber: Mapped[Optional[float]] = mapped_column(default=None)
     sodium: Mapped[float] = mapped_column(default=0.0)
+    sugar_g: Mapped[Optional[float]] = mapped_column(default=None)
+    iron_mg: Mapped[Optional[float]] = mapped_column(default=None)
+    calcium_mg: Mapped[Optional[float]] = mapped_column(default=None)
+    potassium_mg: Mapped[Optional[float]] = mapped_column(default=None)
+    vitamin_c_mg: Mapped[Optional[float]] = mapped_column(default=None)
+    vitamin_d_ug: Mapped[Optional[float]] = mapped_column(default=None)
 
     meal_items: Mapped[list["MealItem"]] = relationship(
         back_populates="food", cascade="all, delete-orphan"
