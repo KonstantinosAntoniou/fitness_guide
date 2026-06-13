@@ -1,5 +1,5 @@
 from typing import Optional
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 from app.models import User, Food, Meal
 
@@ -13,8 +13,12 @@ class FoodRepository:
         return food
 
     def find_by_name_brand(self, name: str, brand: str) -> Optional[Food]:
+        # exact, case-insensitive, whitespace-tolerant — robust dedup
         return self.s.scalar(
-            select(Food).where(Food.name.ilike(name), Food.brand.ilike(brand))
+            select(Food).where(
+                func.lower(Food.name) == name.strip().lower(),
+                func.lower(Food.brand) == (brand or "").strip().lower(),
+            )
         )
 
     def get(self, food_id: int) -> Optional[Food]:
