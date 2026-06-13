@@ -83,18 +83,20 @@ agent, and any future client.
 ## 6. Data model
 
 Replaces the current denormalized `DailyPlan.meals` string with structured rows.
-**All nutrient values are stored per 100g**; quantities are stored in grams, so
-macros are always computed, never frozen.
+**Nutrient values are stored per serving** (legacy data is per-serving with no
+gram weight). `Food` carries a `serving_description` and an optional
+`serving_grams`; quantities are **servings** (float). Macros are always computed
+from structured items, never frozen.
 
 - **User** — profile inputs only: `name, age, sex, height_cm, weight_kg,
   activity_level`, plus goal (`goal_type, goal_period, weight_change_amount`).
   BMR/TDEE/target-calories are **computed in `core/` on demand** (single source of
   truth) rather than stored as stale columns.
-- **Food** — `name, brand/label, source (manual|openfoodfacts|usda), source_id,
-  serving_grams (optional)`, and per-100g nutrients: `calories, protein, carbs,
-  fat_total, fat_saturated, fiber, sodium`.
-- **Meal** (reusable recipe) — `name, description`; has many **MealItem**
-  (`food_id, grams`).
+- **Food** — `name, brand, serving_description, serving_grams (optional), source
+  (manual|legacy|openfoodfacts|usda), source_id`, and per-serving nutrients:
+  `calories, protein, carbs, fat_saturated, fat_unsaturated, fiber, sodium`
+  (`fat_total` = saturated + unsaturated, computed).
+- **Meal** (reusable recipe) — `name`; has many **MealItem** (`food_id, servings`).
 - **Plan** — `user_id, name/date, type (template|dated)`; has many **PlanEntry**
   (a meal slot: `name, order`); each entry has many **PlanItem** (`food_id` or
   `meal_id`, `grams`).
