@@ -22,6 +22,12 @@ def coach(user_id: int, req: CoachRequest, db: Session = Depends(get_session),
     agent = builder(db, user_id)
     result = agent.invoke(
         {"messages": [{"role": "user", "content": req.message}]},
-        config={"recursion_limit": 12},
+        config={"recursion_limit": 30},
     )
-    return {"reply": result["messages"][-1].content}
+    content = result["messages"][-1].content
+    if isinstance(content, list):  # Gemini returns content as text/thought blocks
+        content = "\n".join(
+            p.get("text", "") for p in content
+            if isinstance(p, dict) and p.get("type") == "text"
+        ).strip()
+    return {"reply": content}

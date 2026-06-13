@@ -32,3 +32,15 @@ def test_coach_chat(client):
     r = client.post("/users/1/coach", json={"message": "make me a plan"})
     assert r.status_code == 200
     assert r.json()["reply"] == "echo: make me a plan"
+
+
+def test_coach_chat_extracts_gemini_text_blocks(client):
+    class FakeListAgent:
+        def invoke(self, payload, config=None):
+            return {"messages": [SimpleNamespace(content=[
+                {"type": "text", "text": "Here is"}, {"type": "text", "text": "your plan."}])]}
+
+    app.dependency_overrides[get_coach_agent_builder] = lambda: (lambda db, uid: FakeListAgent())
+    r = client.post("/users/1/coach", json={"message": "plan"})
+    assert r.status_code == 200
+    assert r.json()["reply"] == "Here is\nyour plan."
