@@ -19,15 +19,18 @@ def build_tools(session: Session, user_id: int, nutrition_provider=None):
 
     @tool
     def get_profile() -> str:
-        """Get the current user's profile and computed daily calorie/macro targets. Use to ground advice in their real data."""
+        """Get the user's profile and daily macro + key-micro targets. Ground all advice in this."""
         u = users.get(user_id)
         if not u:
             return "No profile found for this user."
-        m = compute_metrics(sex=u.sex, weight_kg=u.weight_kg, height_cm=u.height_cm,
-                            age=u.age, activity_level=u.activity_level, goal_type=u.goal_type,
+        from app.core.targets import compute_targets
+        t = compute_targets(sex=u.sex, weight_kg=u.weight_kg, height_cm=u.height_cm, age=u.age,
+                            activity_level=u.activity_level, goal_type=u.goal_type,
                             goal_period=u.goal_period, amount_kg=u.amount_kg)
-        return (f"{u.name}: target {round(m['target_calories'])} kcal/day "
-                f"(TDEE {round(m['tdee_msj'])}), BMI {round(m['bmi'], 1)} ({m['bmi_category']}).")
+        return (f"{u.name}: {round(t.calories)} kcal/day | protein {round(t.protein_g)}g, "
+                f"carbs {round(t.carb_g)}g, fat {round(t.fat_g)}g, fiber {round(t.fiber_g)}g. "
+                f"Micro goals: iron {t.iron_mg}mg, calcium {t.calcium_mg}mg, potassium {t.potassium_mg}mg, "
+                f"vit C {t.vitamin_c_mg}mg, vit D {t.vitamin_d_ug}ug. Sodium cap {round(t.sodium_mg_max)}mg.")
 
     @tool
     def search_my_foods(query: str) -> str:

@@ -17,6 +17,12 @@ class NutritionResult(BaseModel):
     fat_unsaturated: float = 0.0
     fiber: Optional[float] = None
     sodium: float = 0.0
+    sugar_g: Optional[float] = None
+    iron_mg: Optional[float] = None
+    calcium_mg: Optional[float] = None
+    potassium_mg: Optional[float] = None
+    vitamin_c_mg: Optional[float] = None
+    vitamin_d_ug: Optional[float] = None
 
 
 class NutritionProvider(Protocol):
@@ -38,6 +44,7 @@ def parse_off_product(product: dict) -> NutritionResult:
     fat_total = _num(n, "fat_100g")
     saturated = _num(n, "saturated-fat_100g")
     fiber = n.get("fiber_100g")
+    sugars = n.get("sugars_100g")
     return NutritionResult(
         name=str(product.get("product_name") or "Unknown").strip(),
         brand=str((product.get("brands") or "").split(",")[0]).strip(),
@@ -51,5 +58,6 @@ def parse_off_product(product: dict) -> NutritionResult:
         fat_saturated=saturated,
         fat_unsaturated=max(0.0, fat_total - saturated),
         fiber=float(fiber) if fiber is not None else None,
-        sodium=_num(n, "sodium_100g"),
+        sodium=_num(n, "sodium_100g") * 1000,  # OFF sodium is grams -> store mg
+        sugar_g=float(sugars) if sugars is not None else None,
     )
