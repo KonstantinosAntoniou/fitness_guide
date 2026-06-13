@@ -7,6 +7,7 @@ from app.api.foods import router as foods_router
 from app.api.nutrition import router as nutrition_router
 from app.api.plans import router as plans_router
 from app.api.logs import router as logs_router
+from app.api.coach import router as coach_router
 
 
 @asynccontextmanager
@@ -22,6 +23,7 @@ app.include_router(foods_router)
 app.include_router(nutrition_router)
 app.include_router(plans_router)
 app.include_router(logs_router)
+app.include_router(coach_router)
 
 
 @app.get("/health")

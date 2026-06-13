@@ -28,6 +28,12 @@ class FoodRepository:
     def list_all(self) -> list[Food]:
         return list(self.s.scalars(select(Food).order_by(Food.name)))
 
+    def search(self, query: str, limit: int = 20) -> list[Food]:
+        like = f"%{query.strip()}%"
+        return list(self.s.scalars(
+            select(Food).where(Food.name.ilike(like)).order_by(Food.name).limit(limit)
+        ))
+
 
 class MealRepository:
     def __init__(self, session: Session):
