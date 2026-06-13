@@ -3,9 +3,11 @@ import datetime
 from langchain_core.tools import tool
 from sqlalchemy.orm import Session
 from app.models import Food
-from app.repositories import FoodRepository, UserRepository, PlanRepository, LogRepository
-from app.core.profile import compute_metrics
-from app.core.planner import build_day_plan
+from app.repositories import (
+    FoodRepository, UserRepository, PlanRepository, LogRepository, MealRepository,
+)
+from app.core.targets import compute_targets
+from app.core.planner import food_spec, meal_ingredient_specs, fit_servings, score_plan
 from app.core.macros import scale_food, sum_macros
 from app.integrations.openfoodfacts import OpenFoodFactsProvider
 
@@ -16,6 +18,7 @@ def build_tools(session: Session, user_id: int, nutrition_provider=None):
     users = UserRepository(session)
     plans = PlanRepository(session)
     logs = LogRepository(session)
+    meals_repo = MealRepository(session)
 
     @tool
     def get_profile() -> str:
@@ -23,7 +26,6 @@ def build_tools(session: Session, user_id: int, nutrition_provider=None):
         u = users.get(user_id)
         if not u:
             return "No profile found for this user."
-        from app.core.targets import compute_targets
         t = compute_targets(sex=u.sex, weight_kg=u.weight_kg, height_cm=u.height_cm, age=u.age,
                             activity_level=u.activity_level, goal_type=u.goal_type,
                             goal_period=u.goal_period, amount_kg=u.amount_kg)
@@ -65,19 +67,59 @@ def build_tools(session: Session, user_id: int, nutrition_provider=None):
         return f"Added '{name}' (#{f.id})."
 
     @tool
-    def generate_plan(target_calories: float, meals: int = 3) -> str:
-        """Generate and save a day meal plan from the user's food library hitting the calorie target."""
-        candidates = foods.list_all()
-        try:
-            draft = build_day_plan(target_calories, candidates, meals=meals)
-        except ValueError as e:
-            return f"Could not build a plan: {e}"
+    def plan_day(meals: list[dict]) -> str:
+        """Build and save a balanced day plan that hits the user's macro targets.
+
+        `meals` is a list of slots, each {"name": str, "foods": [food names], "meals": [saved meal names]}.
+        Choose meal-appropriate, varied foods (a protein, a carb, veg/fruit). The tool sizes servings to
+        hit the user's protein/carb/fat targets within realistic limits and returns a scorecard. If a
+        macro or key micro is low, change your food selection and call again.
+        """
+        u = users.get(user_id)
+        if not u:
+            return "No profile found for this user."
+        targets = compute_targets(sex=u.sex, weight_kg=u.weight_kg, height_cm=u.height_cm,
+                                  age=u.age, activity_level=u.activity_level, goal_type=u.goal_type,
+                                  goal_period=u.goal_period, amount_kg=u.amount_kg)
+        slots = []
+        for slot in meals or []:
+            specs = []
+            for fname in slot.get("foods", []):
+                hits = foods.search(fname)
+                if hits:
+                    specs.append(food_spec(hits[0]))
+            for mname in slot.get("meals", []):
+                meal = meals_repo.find_by_name(mname)
+                if meal:
+                    specs.extend(meal_ingredient_specs(meal))
+            if specs:
+                slots.append((slot.get("name", "Meal"), specs))
+        all_specs = [s for _, specs in slots for s in specs]
+        if not all_specs:
+            return ("None of those foods/meals are in the library — add them first "
+                    "(search_nutrition_database / add_food_to_library).")
+
+        servings = fit_servings(all_specs, targets.protein_g, targets.carb_g, targets.fat_g)
+        draft, idx = [], 0
+        for name, specs in slots:
+            items = [(s.food, round(servings[idx + i], 2)) for i, s in enumerate(specs)]
+            idx += len(specs)
+            draft.append({"name": name, "items": items})
         plan = plans.save_draft(user_id=user_id, name="Coach plan", draft=draft)
         session.commit()
-        lines = [f"Saved plan #{plan.id} (~{round(target_calories)} kcal):"]
-        for entry in plan.entries:
-            items = ", ".join(f"{round(it.servings, 1)}x {it.food.name}" for it in entry.items)
-            lines.append(f"- {entry.name}: {items}")
+
+        score = score_plan(all_specs, servings, targets)
+        pct = score.macro_pct()
+        lines = [f"Saved plan #{plan.id}. Totals vs target:",
+                 f"  {round(score.calories)} kcal ({pct['calories']:.0f}% of {round(targets.calories)}), "
+                 f"protein {score.protein_g}g ({pct['protein']:.0f}%), carbs {score.carb_g}g ({pct['carbs']:.0f}%), "
+                 f"fat {score.fat_g}g ({pct['fat']:.0f}%), fiber {score.fiber_g}g."]
+        low = [m.replace('_mg', '').replace('_ug', '').replace('vitamin_', 'vit ')
+               for m, (got, tgt) in score.micros.items() if tgt and got < 0.5 * tgt]
+        lines.append("  Low micros: " + (", ".join(low) if low else "none — looks balanced."))
+        for entry in draft:
+            foods_txt = ", ".join(f"{q}x {food.name}" for food, q in entry["items"])
+            lines.append(f"  {entry['name']}: {foods_txt}")
         return "\n".join(lines)
 
     @tool
@@ -102,4 +144,4 @@ def build_tools(session: Session, user_id: int, nutrition_provider=None):
                 f"C{round(total.carbs)} F{round(total.fat_total)} across {len(entries)} items.")
 
     return [get_profile, search_my_foods, search_nutrition_database,
-            add_food_to_library, generate_plan, log_food, todays_intake]
+            add_food_to_library, plan_day, log_food, todays_intake]
