@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from app.db import get_session
 from app.repositories import UserRepository
 from app.core.profile import compute_metrics
+from app.core.targets import compute_targets
 
 router = APIRouter(prefix="/users", tags=["users"])
 
@@ -25,15 +26,15 @@ class UserOut(BaseModel):
     id: int
     name: str
     metrics: dict
+    targets: dict
 
 
 def _to_out(user) -> "UserOut":
-    metrics = compute_metrics(
-        sex=user.sex, weight_kg=user.weight_kg, height_cm=user.height_cm,
-        age=user.age, activity_level=user.activity_level,
-        goal_type=user.goal_type, goal_period=user.goal_period, amount_kg=user.amount_kg,
-    )
-    return UserOut(id=user.id, name=user.name, metrics=metrics)
+    kw = dict(sex=user.sex, weight_kg=user.weight_kg, height_cm=user.height_cm,
+              age=user.age, activity_level=user.activity_level, goal_type=user.goal_type,
+              goal_period=user.goal_period, amount_kg=user.amount_kg)
+    return UserOut(id=user.id, name=user.name,
+                   metrics=compute_metrics(**kw), targets=compute_targets(**kw).__dict__)
 
 
 @router.post("", status_code=201, response_model=UserOut)

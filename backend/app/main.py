@@ -15,6 +15,13 @@ from app.api.coach import router as coach_router
 async def lifespan(app: FastAPI):
     load_project_env()
     init_db()
+    from app.db import engine, SessionLocal
+    from app.migration.schema_upgrade import ensure_food_micro_columns
+    from app.seed.seeder import seed_staples
+    ensure_food_micro_columns(engine)
+    with SessionLocal() as s:
+        seed_staples(s)
+        s.commit()
     yield
 
 

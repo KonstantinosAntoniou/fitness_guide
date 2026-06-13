@@ -40,3 +40,14 @@ def test_duplicate_name_rejected(client):
                "weight_kg": 80, "activity_level": "moderate"}
     assert client.post("/users", json=payload).status_code == 201
     assert client.post("/users", json=payload).status_code == 409
+
+
+def test_user_output_includes_targets(client):
+    r = client.post("/users", json={
+        "name": "T", "age": 30, "sex": "male", "height_cm": 181, "weight_kg": 85,
+        "activity_level": "moderate", "goal_type": "lose", "goal_period": "week", "amount_kg": 0.5,
+    })
+    assert r.status_code == 201
+    targets = r.json()["targets"]
+    assert round(targets["protein_g"]) == 170
+    assert round(targets["calories"]) == 2296
