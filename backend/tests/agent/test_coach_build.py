@@ -9,8 +9,11 @@ def test_system_prompt_mentions_coaching():
     assert "coach" in SYSTEM_PROMPT.lower()
 
 
-@pytest.mark.skipif(not os.getenv("GOOGLE_API_KEY"), reason="needs GOOGLE_API_KEY for live LLM")
+@pytest.mark.skipif(not os.getenv("RUN_LIVE_AGENT"),
+                    reason="set RUN_LIVE_AGENT=1 (with GOOGLE_API_KEY in .env) to run the live Gemini test")
 def test_live_agent_runs():
+    from app.config import load_project_env
+    load_project_env()
     engine = new_engine("sqlite://")
     Base.metadata.create_all(engine)
     with new_session_factory(engine)() as s:
