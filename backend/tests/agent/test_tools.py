@@ -37,9 +37,9 @@ def test_search_nutrition_tool(ctx):
     assert "Tofu" in tools["search_nutrition_database"].invoke({"query": "tofu"})
 
 
-def test_generate_plan_tool_persists(ctx):
+def test_plan_day_tool_persists(ctx):
     session, tools = ctx
-    out = tools["generate_plan"].invoke({"target_calories": 2000, "meals": 2})
+    out = tools["plan_day"].invoke({"meals": [{"name": "Lunch", "foods": ["Rice", "Chicken"]}]})
     assert "plan" in out.lower()
     assert len(PlanRepository(session).list_for_user(1)) == 1
 
