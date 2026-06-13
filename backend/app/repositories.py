@@ -1,7 +1,8 @@
+import datetime
 from typing import Optional
 from sqlalchemy import select, func
 from sqlalchemy.orm import Session
-from app.models import User, Food, Meal
+from app.models import User, Food, Meal, Plan, PlanEntry, PlanItem, LogEntry
 
 
 class FoodRepository:
@@ -61,3 +62,39 @@ class UserRepository:
 
     def list_all(self) -> list[User]:
         return list(self.s.scalars(select(User).order_by(User.name)))
+
+
+class PlanRepository:
+    def __init__(self, session: Session):
+        self.s = session
+
+    def save_draft(self, user_id: Optional[int], name: str, draft: list[dict]) -> Plan:
+        plan = Plan(user_id=user_id, name=name)
+        for pos, entry in enumerate(draft):
+            pe = PlanEntry(name=entry.get("name", f"Meal {pos + 1}"), position=pos)
+            for food, servings in entry["items"]:
+                pe.items.append(PlanItem(food_id=food.id, servings=servings))
+            plan.entries.append(pe)
+        self.s.add(plan)
+        return plan
+
+    def get(self, plan_id: int) -> Optional[Plan]:
+        return self.s.get(Plan, plan_id)
+
+    def list_for_user(self, user_id: int) -> list[Plan]:
+        return list(self.s.scalars(select(Plan).where(Plan.user_id == user_id)))
+
+
+class LogRepository:
+    def __init__(self, session: Session):
+        self.s = session
+
+    def add(self, user_id: int, food_id: int, servings: float, source: str = "manual") -> LogEntry:
+        entry = LogEntry(user_id=user_id, food_id=food_id, servings=servings, source=source)
+        self.s.add(entry)
+        return entry
+
+    def for_day(self, user_id: int, day: datetime.date) -> list[LogEntry]:
+        return list(self.s.scalars(
+            select(LogEntry).where(LogEntry.user_id == user_id, LogEntry.eaten_on == day)
+        ))
