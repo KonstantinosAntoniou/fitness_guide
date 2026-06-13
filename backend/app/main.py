@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
+from app.config import load_project_env
 from app.db import init_db
 from app.api.profile import router as profile_router
 from app.api.users import router as users_router
@@ -12,6 +13,7 @@ from app.api.coach import router as coach_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    load_project_env()
     init_db()
     yield
 
