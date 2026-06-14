@@ -3,10 +3,13 @@ import os
 import httpx
 from app.integrations.nutrition import NutritionResult
 
-# legacy SR nutrient numbers
-_N = {"kcal": "208", "protein": "203", "carbs": "205", "fat": "204", "sat": "606",
+# nutrient numbers (consistent across SR Legacy + Foundation)
+_N = {"protein": "203", "carbs": "205", "fat": "204", "sat": "606",
       "sugar": "269", "fiber": "291", "sodium": "307", "calcium": "301", "iron": "303",
       "potassium": "306", "vit_c": "401", "vit_d": "328"}
+# energy lives under different codes by dataset: 208 (SR Legacy kcal),
+# 2048/2047 (Foundation Atwater general/specific), 957/958 (older). Try in order.
+_ENERGY = ("208", "2048", "2047", "957", "958")
 
 
 def parse_usda_food(food: dict) -> NutritionResult:
@@ -19,6 +22,16 @@ def parse_usda_food(food: dict) -> NutritionResult:
         except (TypeError, ValueError):
             return None
 
+    def energy():
+        for code in _ENERGY:
+            v = vals.get(code)
+            if v not in (None, ""):
+                try:
+                    return float(v)
+                except (TypeError, ValueError):
+                    pass
+        return 0.0
+
     fat_total = num("fat") or 0.0
     sat = num("sat") or 0.0
     return NutritionResult(
@@ -26,7 +39,7 @@ def parse_usda_food(food: dict) -> NutritionResult:
         brand=str(food.get("brandOwner") or "").strip(),
         serving_description="100g", serving_grams=100,
         source="usda", source_id=str(food.get("fdcId")) if food.get("fdcId") else None,
-        calories=num("kcal") or 0.0, protein=num("protein") or 0.0, carbs=num("carbs") or 0.0,
+        calories=energy(), protein=num("protein") or 0.0, carbs=num("carbs") or 0.0,
         fat_saturated=sat, fat_unsaturated=max(0.0, fat_total - sat),
         fiber=num("fiber"), sodium=num("sodium") or 0.0,
         sugar_g=num("sugar"), iron_mg=num("iron"), calcium_mg=num("calcium"),
