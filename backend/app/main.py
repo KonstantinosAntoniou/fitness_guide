@@ -19,8 +19,10 @@ async def lifespan(app: FastAPI):
     from app.migration.schema_upgrade import ensure_food_micro_columns
     from app.seed.seeder import seed_staples
     ensure_food_micro_columns(engine)
+    from app.seed.enrich import enrich_legacy
     with SessionLocal() as s:
         seed_staples(s)
+        enrich_legacy(s)
         s.commit()
     yield
 

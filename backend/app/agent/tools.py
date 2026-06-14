@@ -2,7 +2,7 @@
 import datetime
 from langchain_core.tools import tool
 from sqlalchemy.orm import Session
-from app.models import Food
+from app.models import Food, MealItem
 from app.repositories import (
     FoodRepository, UserRepository, PlanRepository, LogRepository, MealRepository,
 )
@@ -143,5 +143,31 @@ def build_tools(session: Session, user_id: int, nutrition_provider=None):
         return (f"Today: {round(total.calories)} kcal, P{round(total.protein)} "
                 f"C{round(total.carbs)} F{round(total.fat_total)} across {len(entries)} items.")
 
+    @tool
+    def save_meal(name: str, items: list[dict]) -> str:
+        """Save a reusable meal from library foods. items = [{"food": name, "servings": number}]."""
+        if meals_repo.find_by_name(name):
+            return f"A meal named '{name}' already exists."
+        meal = meals_repo.create(name)
+        session.flush()
+        added = 0
+        for it in items:
+            hits = foods.search(it.get("food", ""))
+            if hits:
+                session.add(MealItem(meal_id=meal.id, food_id=hits[0].id,
+                                     servings=float(it.get("servings", 1))))
+                added += 1
+        session.commit()
+        return f"Saved meal '{name}' with {added} item(s)."
+
+    @tool
+    def list_my_plans() -> str:
+        """List the user's saved day plans (id, name, number of meals)."""
+        ps = plans.list_for_user(user_id)
+        if not ps:
+            return "No saved plans yet."
+        return "\n".join(f"#{p.id} {p.name} — {len(p.entries)} meals" for p in ps)
+
     return [get_profile, search_my_foods, search_nutrition_database,
-            add_food_to_library, plan_day, log_food, todays_intake]
+            add_food_to_library, plan_day, log_food, todays_intake,
+            save_meal, list_my_plans]
