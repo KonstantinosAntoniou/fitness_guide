@@ -24,6 +24,15 @@ def test_parse_usda_food():
     assert r.sodium == 74 and r.iron_mg == 0.7 and r.potassium_mg == 256
 
 
+def test_energy_fallback_for_foundation_foods():
+    # Foundation foods store kcal under 2048, not 208 — must still resolve calories
+    food = {"fdcId": 1, "description": "Lentils, Dry", "foodNutrients": [
+        {"nutrientNumber": "203", "value": 25}, {"nutrientNumber": "205", "value": 60},
+        {"nutrientNumber": "2048", "value": 352},
+    ]}
+    assert parse_usda_food(food).calories == 352
+
+
 def test_search_hits_api_and_parses():
     captured = {}
 

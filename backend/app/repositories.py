@@ -29,9 +29,14 @@ class FoodRepository:
         return list(self.s.scalars(select(Food).order_by(Food.name)))
 
     def search(self, query: str, limit: int = 20) -> list[Food]:
-        like = f"%{query.strip()}%"
+        # token match: every query word must appear in the name (any order), so
+        # "brown rice" matches the USDA-style name "Rice, Brown, Parboiled, Cooked".
+        words = [w for w in query.strip().split() if w]
+        if not words:
+            return []
+        conds = [Food.name.ilike(f"%{w}%") for w in words]
         return list(self.s.scalars(
-            select(Food).where(Food.name.ilike(like)).order_by(Food.name).limit(limit)
+            select(Food).where(*conds).order_by(Food.name).limit(limit)
         ))
 
 

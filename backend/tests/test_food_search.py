@@ -20,3 +20,13 @@ def test_search_partial_case_insensitive(session):
     names = [f.name for f in repo.search("rice")]
     assert names == ["Brown Rice"]
     assert len(repo.search("e")) == 2  # both contain 'e'
+
+
+def test_search_matches_reordered_usda_names(session):
+    repo = FoodRepository(session)
+    repo.add(Food(name="Rice, Brown, Parboiled, Cooked", calories=120))
+    repo.add(Food(name="Yogurt, Greek, Plain, Nonfat", calories=59))
+    session.commit()
+    # natural multi-word queries must match the reordered "Noun, modifier" names
+    assert [f.name for f in repo.search("brown rice")] == ["Rice, Brown, Parboiled, Cooked"]
+    assert [f.name for f in repo.search("greek yogurt")] == ["Yogurt, Greek, Plain, Nonfat"]
