@@ -22,7 +22,7 @@ def coach(user_id: int, req: CoachRequest, db: Session = Depends(get_session),
     agent = builder(db, user_id)
     result = agent.invoke(
         {"messages": [{"role": "user", "content": req.message}]},
-        config={"recursion_limit": 30},
+        config={"recursion_limit": 30, "configurable": {"thread_id": f"user-{user_id}"}},
     )
     content = result["messages"][-1].content
     if isinstance(content, list):  # Gemini returns content as text/thought blocks

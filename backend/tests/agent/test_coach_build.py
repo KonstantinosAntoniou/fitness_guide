@@ -5,8 +5,11 @@ from app.models import User
 from app.agent.coach import build_coach_agent, SYSTEM_PROMPT
 
 
-def test_system_prompt_mentions_coaching():
-    assert "coach" in SYSTEM_PROMPT.lower()
+def test_system_prompt_covers_key_behaviors():
+    p = SYSTEM_PROMPT.lower()
+    assert "coach" in p
+    assert "fat" in p          # must cover all macros incl. fat
+    assert "calorie" in p      # aim for the calorie target
 
 
 @pytest.mark.skipif(not os.getenv("RUN_LIVE_AGENT"),
